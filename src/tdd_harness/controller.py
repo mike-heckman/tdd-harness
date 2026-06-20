@@ -57,9 +57,6 @@ class TDDLoopController:
         self.config = config
         self.registry = registry
         self.current_phase = Phase.AMBER
-
-        import sys
-
         prefix = "test-" if "pytest" in sys.modules else ""
         self.session_id = f"{prefix}{uuid.uuid4()}"
 
