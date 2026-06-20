@@ -95,3 +95,73 @@ def test_magenta_exit(controller):
     # Valid Magenta exit
     with patch.object(controller, "check_green_exit"):
         controller.check_magenta_exit(85.0, 10)
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.controller.run_lint")
+@patch("src.tdd_harness.controller.orchestrate_targeted")
+@patch("src.tdd_harness.controller.TDDLoopController._generate_post_mortem")
+@patch("src.tdd_harness.controller.TDDLoopController._is_path_allowed", return_value=True)
+async def test_stage_implementation_success(
+    mock_is_path_allowed, mock_post_mortem, mock_orch, mock_lint, controller, tmp_path
+):
+    controller.current_phase = Phase.BLUE
+    test_file = tmp_path / "test_file.py"
+    test_file.write_text("print('hello')")
+
+    # Mock successful lint and test
+    mock_lint.return_value = {"status": "success"}
+    mock_orch.return_value = {"pytest": {"status": "success"}}
+
+    result = await controller.stage_implementation(str(test_file), "print('hello')")
+    assert result == "Implementation staged successfully."
+    assert not mock_post_mortem.called
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.controller.run_lint")
+@patch("src.tdd_harness.controller.orchestrate_targeted")
+@patch("src.tdd_harness.controller.TDDLoopController._generate_post_mortem")
+@patch("src.tdd_harness.controller.TDDLoopController._is_path_allowed", return_value=True)
+async def test_stage_implementation_lint_failure(
+    mock_is_path_allowed, mock_post_mortem, mock_orch, mock_lint, controller, tmp_path
+):
+    controller.current_phase = Phase.BLUE
+    test_file = tmp_path / "test_file.py"
+    test_file.write_text("print('hello')")
+
+    # Mock lint failure
+    mock_lint.return_value = {"status": "failed", "stderr": "SyntaxError"}
+    mock_post_mortem.return_value = "Fix syntax error."
+
+    result = await controller.stage_implementation(str(test_file), "print('hello')")
+    assert "Linting failed. Reverted file" in result
+    assert "Post-Mortem Summary & Guidance:" in result
+    assert "Fix syntax error." in result
+    assert len(controller.past_failure_summaries) == 1
+    assert controller.past_failure_summaries[0] == "Fix syntax error."
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.controller.run_lint")
+@patch("src.tdd_harness.controller.orchestrate_targeted")
+@patch("src.tdd_harness.controller.TDDLoopController._generate_post_mortem")
+@patch("src.tdd_harness.controller.TDDLoopController._is_path_allowed", return_value=True)
+async def test_stage_test_implementation_expected_error(
+    mock_is_path_allowed, mock_post_mortem, mock_orch, mock_lint, controller, tmp_path
+):
+    controller.current_phase = Phase.RED
+    test_file = tmp_path / "test_file.py"
+    test_file.write_text("def test_fail(): assert False")
+
+    # Mock successful lint and test failing with expected error
+    mock_lint.return_value = {"status": "success"}
+    mock_orch.return_value = {"pytest": {"status": "failed", "stderr": "AssertionError: 1 != 2"}}
+
+    # Also patch yaml.dump safely so reasoning file works if needed
+    with patch("src.tdd_harness.controller.yaml.dump"):
+        result = await controller.stage_test_implementation(
+            str(test_file), "def test_fail(): assert False", "test_fail", "concept"
+        )
+        assert result == "Test staged successfully."
+        assert not mock_post_mortem.called
