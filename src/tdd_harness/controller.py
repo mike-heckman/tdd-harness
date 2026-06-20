@@ -2,7 +2,6 @@
 TDD Loop Controller Module.
 """
 
-import datetime
 import shutil
 import sys
 import uuid
@@ -59,12 +58,14 @@ class TDDLoopController:
         self.registry = registry
         self.current_phase = Phase.AMBER
         self.session_id = str(uuid.uuid4())
+        self.past_failure_summaries: list[str] = []
 
         # Register built-in file operations wrapped with security interceptors
         self.registry.register_python_tool(self.read_file_safe, name="read_file")
         self.registry.register_python_tool(self.write_file_safe, name="write_file")
         self.registry.register_python_tool(self.success, name="success")
         self.registry.register_python_tool(self.abort, name="abort")
+        self.registry.register_python_tool(self.stage_implementation, name="stage_implementation")
         self.registry.register_python_tool(self.stage_test_implementation, name="stage_test_implementation")
 
     def _is_path_allowed(self, path: str, is_write: bool) -> bool:
@@ -172,7 +173,85 @@ class TDDLoopController:
             f.write(f"Abort Reason: {reason}\\n")
         sys.exit(1)
 
-    def stage_test_implementation(self, filepath: str, code: str, test_name: str, test_concept: str) -> str:
+    async def _generate_post_mortem(self, filepath: str, raw_error: str) -> str:
+        """
+        Generates a post-mortem summary for a failure using a secondary LLM call.
+        """
+        code = self.read_file_safe(filepath)
+        prompt = f"""Analyze the following test/linter failure for {filepath}.
+Code:
+{code}
+
+Traceback:
+{raw_error}
+
+Return a 2-3 sentence technical summary of the root cause AND a specific, actionable suggestion for what the primary agent should do differently to fix it. Do not include any other text."""
+
+        from openai import AsyncOpenAI
+
+        api_key = str(self.config.llm.get("api_key", "")) if self.config.llm.get("api_key") else None
+        base_url = str(self.config.llm.get("base_url", "")) if self.config.llm.get("base_url") else None
+        model = str(self.config.llm.get("model", "gpt-4o"))
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        try:
+            response = await client.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}])
+            return response.choices[0].message.content or "Failed to generate post-mortem."
+        except Exception as e:
+            return f"Failed to generate post-mortem: {e}"
+
+    async def stage_implementation(self, filepath: str, code: str) -> str:
+        """
+        Stage an implementation for the Blue or Green phase.
+        """
+        if self.current_phase not in (Phase.BLUE, Phase.GREEN):
+            return "Error: stage_implementation can only be used in the Blue or Green phase."
+
+        target = Path(filepath)
+        backup_dir = Path(".tdd-harness/backups") / self.session_id
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_dir / f"{target.name}.bak"
+
+        if target.exists() and not backup_path.exists():
+            shutil.copy2(target, backup_path)
+
+        self.write_file_safe(filepath, code)
+
+        # Run lint
+        lint_res = run_lint(self.config, file_path=filepath)
+        if lint_res.get("status") != "success":
+            stderr = lint_res.get("stderr", "")
+            pm = await self._generate_post_mortem(filepath, stderr)
+            self.past_failure_summaries.append(pm)
+            if backup_path.exists():
+                shutil.copy2(backup_path, target)
+            else:
+                target.unlink(missing_ok=True)
+            return f"Linting failed. Reverted file.\\nPost-Mortem Summary & Guidance:\\n{pm}"
+
+        # Run test
+        test_res = orchestrate_targeted(self.config, filepath)
+        any_failed = False
+        errors = []
+        for val in test_res.values():
+            if val.get("status") == "failed":
+                any_failed = True
+                stderr = val.get("stderr", "")
+                if stderr:
+                    errors.append(stderr)
+
+        if any_failed:
+            raw_error = "\\n".join(errors)
+            pm = await self._generate_post_mortem(filepath, raw_error)
+            self.past_failure_summaries.append(pm)
+            if backup_path.exists():
+                shutil.copy2(backup_path, target)
+            else:
+                target.unlink(missing_ok=True)
+            return f"Tests failed. Reverted file.\\nPost-Mortem Summary & Guidance:\\n{pm}"
+
+        return "Implementation staged successfully."
+
+    async def stage_test_implementation(self, filepath: str, code: str, test_name: str, test_concept: str) -> str:
         """
         Stage a test implementation for the Red phase.
         """
@@ -180,16 +259,25 @@ class TDDLoopController:
             return "Error: stage_test_implementation can only be used in the Red phase."
 
         target = Path(filepath)
-        cache_dir = Path(".tdd-harness/.cache")
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir = Path(".tdd-harness/backups") / self.session_id
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_dir / f"{target.name}.bak"
 
-        timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
-        backup_path = cache_dir / f"{target.name}.{timestamp}.bak"
-
-        if target.exists():
+        if target.exists() and not backup_path.exists():
             shutil.copy2(target, backup_path)
 
         self.write_file_safe(filepath, code)
+
+        # Run lint
+        lint_res = run_lint(self.config, file_path=filepath)
+        if lint_res.get("status") != "success":
+            stderr = lint_res.get("stderr", "")
+            pm = await self._generate_post_mortem(filepath, stderr)
+            if backup_path.exists():
+                shutil.copy2(backup_path, target)
+            else:
+                target.unlink(missing_ok=True)
+            return f"Linting failed. Reverted file.\\nPost-Mortem Summary & Guidance:\\n{pm}"
 
         # Run targeted testing
         test_res = orchestrate_targeted(self.config, filepath)
@@ -207,13 +295,14 @@ class TDDLoopController:
 
         if not has_expected_error:
             # Revert
+            raw_error = "\n".join(errors) if errors else "Test passed unexpectedly or failed with wrong error."
+            pm = await self._generate_post_mortem(filepath, raw_error)
+            self.past_failure_summaries.append(pm)
             if backup_path.exists():
                 shutil.copy2(backup_path, target)
             else:
                 target.unlink(missing_ok=True)
-            return (
-                f"Error: Test did not fail with AssertionError or NotImplementedError. Reverted file. Errors: {errors}"
-            )
+            return f"Error: Test did not fail with AssertionError or NotImplementedError. Reverted file.\nPost-Mortem Summary & Guidance:\n{pm}"
 
         # Write reasoning
         reasoning_file = Path(f"{target.name}-reasoning.yaml")
