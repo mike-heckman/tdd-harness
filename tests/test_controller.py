@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import patch
 
 import pytest
@@ -165,3 +166,64 @@ async def test_stage_test_implementation_expected_error(
         )
         assert result == "Test staged successfully."
         assert not mock_post_mortem.called
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.controller.run_lint")
+@patch("src.tdd_harness.controller.TDDLoopController.check_green_exit")
+@patch("src.tdd_harness.controller.AsyncOpenAI")
+async def test_success_approve(mock_openai, mock_check_green, mock_lint, controller, tmp_path):
+    controller.current_phase = Phase.GREEN
+    mock_lint.return_value = {"status": "success"}
+
+    # Mock OpenAI response
+    mock_client = mock_openai.return_value
+    # Awaitable mock for create
+    future = asyncio.Future()
+
+    class MockMessage:
+        content = "APPROVE"
+        tool_calls = None
+
+    class MockChoice:
+        message = MockMessage()
+
+    class MockResponse:
+        choices = [MockChoice()]
+
+    future.set_result(MockResponse())
+    mock_client.chat.completions.create.return_value = future
+
+    result = await controller.success("Implement feature", task_file=None)
+    assert result == "Phase completed successfully."
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.controller.run_lint")
+@patch("src.tdd_harness.controller.TDDLoopController.check_green_exit")
+@patch("src.tdd_harness.controller.AsyncOpenAI")
+async def test_success_reject(mock_openai, mock_check_green, mock_lint, controller, tmp_path):
+    controller.current_phase = Phase.GREEN
+    mock_lint.return_value = {"status": "success"}
+
+    # Mock OpenAI response
+    mock_client = mock_openai.return_value
+    # Awaitable mock for create
+    future = asyncio.Future()
+
+    class MockMessage:
+        content = "REJECT: Missing edge cases."
+        tool_calls = None
+
+    class MockChoice:
+        message = MockMessage()
+
+    class MockResponse:
+        choices = [MockChoice()]
+
+    future.set_result(MockResponse())
+    mock_client.chat.completions.create.return_value = future
+
+    result = await controller.success("Implement feature", task_file=None)
+    assert "Validation failed: Review Sub-Agent Rejected the implementation" in result
+    assert "REJECT: Missing edge cases." in result
