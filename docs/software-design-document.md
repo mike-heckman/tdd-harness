@@ -37,10 +37,24 @@ graph TD
     Loop --> Guard[Guardrails & Bounds Checker]
 ```
 
-### 2.1 Context Isolation & Token Conservation
+### 2.1 Deterministic Orchestration vs. Agentic Loops
+The harness strictly favors **Deterministic Orchestration** over open-ended **Agentic Tool Loops** (like ReAct). 
+- **Agentic Tool Loops**: Giving an LLM an open-ended set of JSON tools and asking it to sequence them autonomously is brittle. It leads to infinite loops, unpredictable edge cases, and excessive token expenditure. The harness avoids this.
+- **Deterministic Orchestration**: The harness itself manages state machines and physical tool execution (e.g., executing bash, making web requests, or interacting with MCP servers) strictly in native Python. The LLM is invoked **only** as a stateless Natural Language Processing (NLP) node to perform specific semantic transformations (e.g., "extract a search string from this query", "pick the best URL from these snippets", "summarize this markdown").
+
+### 2.2 Context Isolation & Token Conservation
 To protect the LLM's context window and prevent token bloat during failure loops:
 - **Staging Buffers**: The LLM cannot edit files directly. It stages changes in-memory. The harness writes the file, runs tests, and immediately reverts on failure to keep the working tree clean.
 - **Post-Mortem Summarization**: When a test or linter fails during the Blue/Green phases, the harness avoids injecting the massive raw traceback into the persistent chat history. Instead, the harness makes a secondary LLM call to generate a concise summary of the failure root cause. The file is then reverted, the raw error/bad code is wiped from the context window, and the "Failure Summary" is injected into subsequent prompts.
+
+### 2.3 Context Assembly & The Context Builder
+The `llm.py` client is strictly a transport layer; it manages API communication and token tracking but does not orchestrate the conversational payload. The Harness delegates payload construction to a dedicated **Context Builder**. 
+
+For every LLM invocation, the Context Builder dynamically constructs the `messages` array according to the strict payload definitions in the `docs/phases/*.md` documents. A standard execution payload includes:
+1. **System Message**: Baseline prompt and strict JSON schema rules.
+2. **Phase Constraints**: The rules, permissions (`rw`/`ro`), and tools available for the current Phase.
+3. **Task Definition**: The `Context` header and `success_criteria` array parsed from the active `XXXX.md` task file.
+4. **Dynamic Targets**: The source code of the active file being modified (or AST extractions, such as failing tests injected during the Green phase).
 
 ## 3. Configuration & State Resolution
 The project is executed from a single entrypoint (e.g., `bin/tdd-harness.sh`).
@@ -123,7 +137,11 @@ The harness operates on a strict 5-Phase lifecycle. File access (`ro` vs `rw`) i
 To support multiple languages and granular file-level execution, the harness delegates toolchain operations to three distinct interfaces: `TestAdapter`, `LintAdapter`, and `CoverageAdapter`.
 - Adapters are mapped in the configuration (`adapters: { test: pytest, lint: ruff, coverage: lcov }`).
 - The `TestAdapter` parses structured outputs (e.g., `pytest-reportlog`) returning exact failure classes.
-- Both `TestAdapter` and `LintAdapter` can be invoked globally or passed a specific `file_path` to optimize execution time during tight loops.
+- The `TestAdapter` must support three distinct execution models:
+  1. **"Everything"**: Runs the full suite across all active languages. *Only this model should generate coverage data.*
+  2. **Language-specific**: Runs only the suite for a requested language.
+  3. **Test-specific**: Runs only a specific test file (e.g., passed via `file_path`) to optimize execution time during tight loops.
+- Similarly, the `LintAdapter` can be invoked globally or targeted at a specific `file_path`.
 
 ### Context Token Tracking & Cache Invalidation
 The harness encapsulates prompts via a dedicated `Prompt` class. To support read-only configuration mounts, the token cache is decoupled from the prompt definition.
