@@ -49,7 +49,7 @@ def main():
     try:
         config_dir = resolve_config_directory(args.project_dir)
     except FileNotFoundError as e:
-        print(f"Error: {e}")
+        print(f"Error: {e}\nPlease run 'tdd-harness init' to set up a new project.")
         sys.exit(1)
 
     # Check git status
@@ -71,6 +71,29 @@ def main():
 
     # Continue with the harness logic
     print("TDD Harness initialized successfully.")
+    import asyncio
+
+    asyncio.run(async_main(config_dir))
+
+
+async def async_main(config_dir: Path):
+    """
+    Async execution phase for CLI.
+    """
+    from .config import load_tdd_harness_config
+    from .mcp_client import MCPClient
+    from .registry import ToolRegistry
+
+    _ = load_tdd_harness_config(config_dir)
+    mcp_client = MCPClient(server_config={})
+    registry = ToolRegistry(mcp_client=mcp_client)
+    await registry.initialize()
+
+    try:
+        await registry.dispatch("index_repo", {})
+        await registry.dispatch("doc_index_repo", {})
+    except ValueError:
+        pass
 
 
 if __name__ == "__main__":
