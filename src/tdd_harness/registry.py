@@ -148,6 +148,8 @@ class ToolRegistry:
             else:
                 if tool.func:
                     result = tool.func(**arguments)
+                    if inspect.iscoroutine(result):
+                        result = await result
                     return ToolCallResult(content=result)
                 return ToolCallResult(content=None, success=False, error="No function defined for tool")
         except Exception as e:

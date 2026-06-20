@@ -40,15 +40,16 @@ def test_main_with_clean_git():
         with patch("src.tdd_harness.cli.resolve_config_directory") as mock_resolve:
             mock_resolve.return_value = config_dir
 
-            with patch("subprocess.run") as mock_run:
-                # Mock successful git status check
-                mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+            with patch("src.tdd_harness.cli.async_main"):
+                with patch("subprocess.run") as mock_run:
+                    # Mock successful git status check
+                    mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
 
-                # This should not raise an exception
-                try:
-                    main()
-                except SystemExit:
-                    pytest.fail("main() should not exit with SystemExit")
+                    # This should not raise an exception
+                    try:
+                        main()
+                    except SystemExit:
+                        pytest.fail("main() should not exit with SystemExit")
 
 
 def test_main_with_dirty_git():
@@ -75,3 +76,21 @@ def test_main_with_dirty_git():
                     main()
 
                 assert exc_info.value.code == 1
+
+
+def test_main_missing_config(capsys: pytest.CaptureFixture) -> None:
+    """
+    Test main function when config directory is missing.
+
+    Args:
+        capsys: Pytest fixture to capture stdout and stderr.
+    """
+    with patch("src.tdd_harness.cli.resolve_config_directory") as mock_resolve:
+        mock_resolve.side_effect = FileNotFoundError("Config directory not found")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "run 'tdd-harness init'" in captured.out
