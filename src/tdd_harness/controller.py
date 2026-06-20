@@ -57,7 +57,12 @@ class TDDLoopController:
         self.config = config
         self.registry = registry
         self.current_phase = Phase.AMBER
-        self.session_id = str(uuid.uuid4())
+
+        import sys
+
+        prefix = "test-" if "pytest" in sys.modules else ""
+        self.session_id = f"{prefix}{uuid.uuid4()}"
+
         self.past_failure_summaries: list[str] = []
 
         # Register built-in file operations wrapped with security interceptors
@@ -67,6 +72,7 @@ class TDDLoopController:
         self.registry.register_python_tool(self.abort, name="abort")
         self.registry.register_python_tool(self.stage_implementation, name="stage_implementation")
         self.registry.register_python_tool(self.stage_test_implementation, name="stage_test_implementation")
+        self.registry.register_python_tool(self.ask_researcher, name="ask_researcher")
 
     def _is_path_allowed(self, path: str, is_write: bool) -> bool:
         """
@@ -319,6 +325,67 @@ Return a 2-3 sentence technical summary of the root cause AND a specific, action
             yaml.dump(reasoning_data, f)
 
         return "Test staged successfully."
+
+    async def ask_researcher(self, query: str) -> str:
+        """
+        Instantiate a stateless Sub-Agent to research a query using available MCP tools.
+
+        Returns a concise 3-4 sentence technical summary.
+        """
+        import json
+
+        from openai import AsyncOpenAI
+
+        api_key = str(self.config.llm.get("api_key", "")) if self.config.llm.get("api_key") else None
+        base_url = str(self.config.llm.get("base_url", "")) if self.config.llm.get("base_url") else None
+        model = str(self.config.llm.get("model", "gpt-4o"))
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+        system_prompt = (
+            "You are a Research Sub-Agent. Your task is to investigate the user's query "
+            "using the provided tools (jdocmunch, jcodemunch, etc). "
+            "Once you have gathered the necessary information, provide a concise, 3-4 sentence technical summary of your findings. "
+            "Do NOT include any extra conversational filler."
+        )
+
+        from typing import Any
+
+        messages: list[Any] = [{"role": "system", "content": system_prompt}, {"role": "user", "content": query}]
+
+        tools: list[Any] = []
+        for schema in self.registry.get_openai_schemas():
+            tool_name = schema["function"]["name"]
+            if self.registry.tools[tool_name].type.value == "mcp":
+                tools.append(schema)
+
+        max_loops = 10
+        for _ in range(max_loops):
+            kwargs: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+            }
+            if tools:
+                kwargs["tools"] = tools
+
+            response = await client.chat.completions.create(**kwargs)  # type: ignore
+
+            msg = response.choices[0].message
+            if getattr(msg, "tool_calls", None):
+                messages.append(msg)
+                for tool_call in msg.tool_calls:  # type: ignore
+                    func = tool_call.function
+                    name = str(func.name)
+                    args = json.loads(func.arguments)
+                    try:
+                        res = await self.registry.dispatch(name, args)
+                        content = str(res.content) if res.success else f"Error: {res.error}"
+                    except Exception as e:
+                        content = f"Error executing tool: {e}"
+                    messages.append({"role": "tool", "tool_call_id": tool_call.id, "name": name, "content": content})
+            else:
+                return msg.content or "No findings could be summarized."
+
+        return "Research loop maxed out without a final summary."
 
     def pre_flight_validation(self) -> bool:
         """

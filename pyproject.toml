@@ -31,3 +31,10 @@ dev = [
 
 [tool.uv]
 cache-dir = ".uv_cache"
+
+[tool.ruff]
+exclude = [
+    ".git",
+    ".tdd-harness",
+    ".uv_cache",
+]
