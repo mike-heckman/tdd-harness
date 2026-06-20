@@ -1,0 +1,33 @@
+[project]
+name = "tdd-harness"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=2.41.1",
+    "pydantic>=2.13.4",
+    "pyyaml>=6.0.3",
+    "mcp",
+    "ruamel.yaml",
+    "python-dotenv",
+]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.410",
+    "pytest>=9.1.0",
+    "pytest-cov>=6.3.0",
+    "pytest-asyncio",
+    "ruff>=0.15.17",
+    "pytest-reportlog>=1.0.0",
+]
+
+[tool.uv]
+cache-dir = ".uv_cache"

@@ -1,0 +1,3 @@
+"""
+TDD Harness package initialization.
+"""

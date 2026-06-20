@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+output/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pyre/
+
+# Coverage
+coverage/
+
+## Output and logs -- the following directories are blocked via global gitignore.
+# Project directories
+#docs/reference/
+#logs/
+#temp/
+#public-dev/
+#extract/
+#node_modules/
+#.pi/
+
+# State files
+.agent-worker-env
+.tdd-state-default.json
+.stop-worker
+.coverage
+
+# Virtual Environments
+.env
+.venv*/
+venv/
+ENV/
+
+# uv
+.uv/
+
+# IDEs
+.idea/
+.vscode/
