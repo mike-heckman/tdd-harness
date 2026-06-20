@@ -13,8 +13,9 @@ from typing import Any
 import yaml
 
 from .config import TddHarnessConfig
+from .coverage_parser import LcovParser
 from .registry import ToolRegistry
-from .runner import orchestrate_targeted, run_coverage, run_lint, run_test
+from .runner import orchestrate_global, orchestrate_targeted, run_coverage, run_lint, run_test
 
 
 class Phase(Enum):
@@ -301,3 +302,54 @@ class TDDLoopController:
         if not res.success:
             raise RuntimeError(res.error)
         return res.content
+
+    async def run_magenta_loop(self) -> None:
+        """
+        Sub-loop for the Magenta phase to enforce coverage guardrails file-by-file.
+        """
+        self.current_phase = Phase.MAGENTA
+        max_attempts = 3
+
+        orchestrate_global(self.config, Path.cwd())
+
+        coverage_file = Path.cwd() / "coverage.lcov"
+
+        if not coverage_file.exists():
+            self.abort("Coverage file not found and could not be generated.")
+
+        parser = LcovParser(Path.cwd())
+        parser.parse_file(coverage_file)
+        missing_coverage = parser.get_missing_coverage()
+
+        for file_path, missing_lines in missing_coverage.items():
+            attempts = 0
+            while attempts < max_attempts:
+                # Dispatch to a hypothetical 'fix_coverage' tool or LLM action
+                # Here we pass the specific missing line numbers for the LLM context.
+                context = {"file_path": file_path, "missing_lines": missing_lines}
+
+                try:
+                    # In a real implementation this sends the context to the LLM agent
+                    # await self.execute_tool("fix_coverage", context)
+                    _ = context
+                    pass
+                except Exception:
+                    pass
+
+                # After LLM action, re-run global coverage to verify
+                orchestrate_global(self.config, Path.cwd())
+
+                parser = LcovParser(Path.cwd())
+                parser.parse_file(coverage_file)
+                new_missing = parser.get_missing_coverage()
+
+                if file_path not in new_missing or not new_missing[file_path]:
+                    break  # Coverage fixed for this file
+
+                # Update missing lines for next attempt
+                missing_lines = new_missing[file_path]
+                attempts += 1
+
+            if attempts >= max_attempts:
+                # TODO: dynamic handling
+                self.abort(f"LLM failed to increase coverage for {file_path} after {max_attempts} attempts.")
