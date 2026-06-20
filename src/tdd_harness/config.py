@@ -8,6 +8,15 @@ import yaml
 from pydantic import BaseModel, Field
 
 
+class ToolConfigFile(BaseModel):
+    """
+    Configuration model for a tool definition file.
+    """
+
+    config: dict[str, object] = Field(default_factory=lambda: {"restart_policy": "exit"})
+    tools: dict[str, list[str]] = Field(default_factory=dict)
+
+
 class TddHarnessConfig(BaseModel):
     """
     Configuration model for tdd-harness.
@@ -17,6 +26,7 @@ class TddHarnessConfig(BaseModel):
     harness: dict[str, object] = Field(default_factory=dict)
     mcp_servers: list[dict[str, object]] = Field(default_factory=list)
     extensions: list[dict[str, object]] = Field(default_factory=list)
+    tool_configs: dict[str, ToolConfigFile] = Field(default_factory=dict)
 
 
 class PromptConfig(BaseModel):
@@ -58,8 +68,21 @@ def load_tdd_harness_config(config_dir: Path) -> TddHarnessConfig:
         raise FileNotFoundError(f"Config file {config_file} not found.")
 
     with open(config_file) as f:
-        config_data = yaml.safe_load(f)
+        config_data = yaml.safe_load(f) or {}
 
+    tool_configs = {}
+    tools_dir = config_dir / "tools"
+    if tools_dir.exists() and tools_dir.is_dir():
+        for tool_file in tools_dir.glob("*.yaml"):
+            with open(tool_file) as tf:
+                tool_data = yaml.safe_load(tf) or {}
+                if "config" not in tool_data:
+                    tool_data["config"] = {"restart_policy": "exit"}
+                elif "restart_policy" not in tool_data["config"]:
+                    tool_data["config"]["restart_policy"] = "exit"
+                tool_configs[tool_file.stem] = tool_data
+
+    config_data["tool_configs"] = tool_configs
     return TddHarnessConfig(**config_data)
 
 

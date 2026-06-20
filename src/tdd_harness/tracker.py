@@ -36,6 +36,9 @@ class AntiThrashingTracker:
         self.duplicate_failures = 0
         self.last_failure_hash = None
 
+        # Track consecutive failures per tool
+        self.tool_failures: dict[str, int] = {}
+
     def record_tool_call(self, tool_call: ToolCall, response: ToolCallResponse) -> None:
         """
         Record a tool call and its result.
@@ -62,9 +65,15 @@ class AntiThrashingTracker:
             else:
                 self.duplicate_failures = 0
                 self.last_failure_hash = call_hash
+
+            # Increment consecutive failures for this tool
+            self.tool_failures[tool_call.tool_name] = self.tool_failures.get(tool_call.tool_name, 0) + 1
         else:
             # Reset duplicate failure counter on success
             self.duplicate_failures = 0
+
+            # Reset consecutive failures for this tool
+            self.tool_failures[tool_call.tool_name] = 0
 
     def should_abort(self) -> bool:
         """
@@ -84,6 +93,18 @@ class AntiThrashingTracker:
 
         return False
 
+    def get_previous_failures(self, tool_name: str) -> int:
+        """
+        Get the number of consecutive failures for a specific tool.
+
+        Args:
+            tool_name: The name of the tool
+
+        Returns:
+            The number of consecutive failures
+        """
+        return self.tool_failures.get(tool_name, 0)
+
     def reset(self) -> None:
         """
         Reset all tracking state.
@@ -92,3 +113,4 @@ class AntiThrashingTracker:
         self.failure_window.clear()
         self.duplicate_failures = 0
         self.last_failure_hash = None
+        self.tool_failures.clear()

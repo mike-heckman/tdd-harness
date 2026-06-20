@@ -68,7 +68,7 @@ async def test_get_openai_schemas(registry, mock_mcp_client):
     registry.register_python_tool(lambda x: x, name="py_tool", description="desc")
 
     schemas = registry.get_openai_schemas()
-    assert len(schemas) == 2
+    assert len(schemas) == 3
 
     mcp_schema = next(s for s in schemas if s["function"]["name"] == "mcp_tool")
     assert mcp_schema["type"] == "function"
