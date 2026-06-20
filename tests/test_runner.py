@@ -112,3 +112,22 @@ def test_legacy_wrappers():
 
         assert res1 == {"test_python_PytestAdapter": {"status": "success"}}
         assert res2 == {"test_python_PytestAdapter": {"status": "success"}}
+
+
+def test_progressive_hints():
+    from src.tdd_harness.runner import _apply_progressive_hints
+
+    result = {"status": "failed", "stderr": "Error: Line too long E501"}
+    tool_config = {"errors": [{"match": "E501", "hints": ["Try breaking the line", "Use a backslash or parenthesis"]}]}
+
+    # 0 failures
+    res0 = _apply_progressive_hints(dict(result), 0, tool_config)
+    assert "Hint: Try breaking the line" in res0["stderr"]
+
+    # 1 failure
+    res1 = _apply_progressive_hints(dict(result), 1, tool_config)
+    assert "Hint: Use a backslash or parenthesis" in res1["stderr"]
+
+    # 5 failures (caps at max hints)
+    res5 = _apply_progressive_hints(dict(result), 5, tool_config)
+    assert "Hint: Use a backslash or parenthesis" in res5["stderr"]
