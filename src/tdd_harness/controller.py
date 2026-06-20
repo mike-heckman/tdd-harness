@@ -2,6 +2,8 @@
 TDD Loop Controller Module.
 """
 
+import difflib
+import json
 import shutil
 import sys
 import uuid
@@ -10,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from openai import AsyncOpenAI
 
 from .config import TddHarnessConfig
 from .coverage_parser import LcovParser
@@ -61,6 +64,7 @@ class TDDLoopController:
         self.session_id = f"{prefix}{uuid.uuid4()}"
 
         self.past_failure_summaries: list[str] = []
+        self.session_modified_files: set[str] = set()
 
         # Register built-in file operations wrapped with security interceptors
         self.registry.register_python_tool(self.read_file_safe, name="read_file")
@@ -128,7 +132,7 @@ class TDDLoopController:
             f.write(content)
         return f"Successfully wrote to {path}"
 
-    async def success(self, message: str) -> str:
+    async def success(self, message: str, task_file: str | None = None) -> str:
         """
         Signals the agent believes it has satisfied the phase.
         """
@@ -148,6 +152,101 @@ class TDDLoopController:
                 self.check_magenta_exit(100.0, 0)
         except PhaseValidationError as e:
             return f"Validation failed: {str(e)}"
+
+        # Invoke Review Sub-Agent
+        diffs = []
+        backup_dir = Path(".tdd-harness/backups") / self.session_id
+        for filepath in self.session_modified_files:
+            target = Path(filepath)
+            backup_path = backup_dir / f"{target.name}.bak"
+            if backup_path.exists() and target.exists():
+                with open(backup_path, encoding="utf-8") as f:
+                    old_lines = f.readlines()
+                with open(target, encoding="utf-8") as f:
+                    new_lines = f.readlines()
+                diff = list(difflib.unified_diff(old_lines, new_lines, fromfile=str(backup_path), tofile=str(target)))
+                diffs.append("".join(diff))
+            elif target.exists():
+                with open(target, encoding="utf-8") as f:
+                    new_lines = f.readlines()
+                diffs.append(f"--- /dev/null\n+++ {target}\n" + "".join(f"+{line}" for line in new_lines))
+
+        unified_diff = "\n".join(diffs)
+        modified_files_list = "\n".join(self.session_modified_files)
+
+        task_content = "Task File not provided or found."
+        if task_file and Path(task_file).exists():
+            with open(task_file, encoding="utf-8") as f:
+                task_content = f.read()
+        else:
+            # Fallback: try to find an active task file in docs/tasks/ready or docs/tasks/in-progress
+            for folder in ["docs/tasks/ready", "docs/tasks/in-progress"]:
+                folder_path = Path(folder)
+                if folder_path.exists():
+                    md_files = list(folder_path.glob("*.md"))
+                    if md_files:
+                        with open(md_files[0], encoding="utf-8") as f:
+                            task_content = f.read()
+                        break
+
+        review_prompt = (
+            "You are a Senior Code Reviewer Sub-Agent. Your task is to review the unified diff of the changes made by the primary agent "
+            "against the original Task File (Definition of Done) and ensure all requirements are met.\n"
+            "You have read-only access to 'get_file_content' and 'get_symbol_source' tools to investigate the full files if the diff lacks context.\n"
+            "You MUST return a structured response: either 'APPROVE' if the changes meet all criteria, or 'REJECT: <specific critique>' if there are missing requirements or issues.\n"
+            "Do NOT output anything else except this structured response."
+        )
+
+        user_content = (
+            f"Task File:\n{task_content}\n\nModified Files:\n{modified_files_list}\n\nUnified Diff:\n{unified_diff}"
+        )
+
+        api_key = str(self.config.llm.get("api_key", "")) if self.config.llm.get("api_key") else None
+        base_url = str(self.config.llm.get("base_url", "")) if self.config.llm.get("base_url") else None
+        model = str(self.config.llm.get("model", "gpt-4o"))
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+        messages = [{"role": "system", "content": review_prompt}, {"role": "user", "content": user_content}]
+
+        # Provide get_file_content and get_symbol_source tools
+        tools = []
+        for schema in self.registry.get_openai_schemas():
+            name = schema["function"]["name"]
+            if name in ("get_file_content", "get_symbol_source"):
+                tools.append(schema)
+
+        max_loops = 5
+        reviewer_response = "APPROVE"
+        for _ in range(max_loops):
+            kwargs = {
+                "model": model,
+                "messages": messages,
+            }
+            if tools:
+                kwargs["tools"] = tools
+
+            # type ignored below as client.chat.completions.create is typed dynamically
+            response = await client.chat.completions.create(**kwargs)  # type: ignore
+
+            msg = response.choices[0].message
+            if getattr(msg, "tool_calls", None):
+                messages.append(msg)
+                for tool_call in msg.tool_calls:  # type: ignore
+                    func = tool_call.function
+                    name = str(func.name)
+                    args = json.loads(func.arguments)
+                    try:
+                        res = await self.registry.dispatch(name, args)
+                        content = str(res.content) if res.success else f"Error: {res.error}"
+                    except Exception as e:
+                        content = f"Error executing tool: {e}"
+                    messages.append({"role": "tool", "tool_call_id": tool_call.id, "name": name, "content": content})
+            else:
+                reviewer_response = msg.content.strip() if msg.content else "APPROVE"
+                break
+
+        if reviewer_response.startswith("REJECT"):
+            return f"Validation failed: Review Sub-Agent Rejected the implementation.\\nCritique: {reviewer_response}"
 
         report_dir = Path("docs/tasks/reports")
         report_dir.mkdir(parents=True, exist_ok=True)
@@ -190,8 +289,6 @@ Traceback:
 
 Return a 2-3 sentence technical summary of the root cause AND a specific, actionable suggestion for what the primary agent should do differently to fix it. Do not include any other text."""
 
-        from openai import AsyncOpenAI
-
         api_key = str(self.config.llm.get("api_key", "")) if self.config.llm.get("api_key") else None
         base_url = str(self.config.llm.get("base_url", "")) if self.config.llm.get("base_url") else None
         model = str(self.config.llm.get("model", "gpt-4o"))
@@ -217,6 +314,7 @@ Return a 2-3 sentence technical summary of the root cause AND a specific, action
         if target.exists() and not backup_path.exists():
             shutil.copy2(target, backup_path)
 
+        self.session_modified_files.add(filepath)
         self.write_file_safe(filepath, code)
 
         # Run lint
@@ -269,6 +367,7 @@ Return a 2-3 sentence technical summary of the root cause AND a specific, action
         if target.exists() and not backup_path.exists():
             shutil.copy2(target, backup_path)
 
+        self.session_modified_files.add(filepath)
         self.write_file_safe(filepath, code)
 
         # Run lint
@@ -329,10 +428,6 @@ Return a 2-3 sentence technical summary of the root cause AND a specific, action
 
         Returns a concise 3-4 sentence technical summary.
         """
-        import json
-
-        from openai import AsyncOpenAI
-
         api_key = str(self.config.llm.get("api_key", "")) if self.config.llm.get("api_key") else None
         base_url = str(self.config.llm.get("base_url", "")) if self.config.llm.get("base_url") else None
         model = str(self.config.llm.get("model", "gpt-4o"))
@@ -344,8 +439,6 @@ Return a 2-3 sentence technical summary of the root cause AND a specific, action
             "Once you have gathered the necessary information, provide a concise, 3-4 sentence technical summary of your findings. "
             "Do NOT include any extra conversational filler."
         )
-
-        from typing import Any
 
         messages: list[Any] = [{"role": "system", "content": system_prompt}, {"role": "user", "content": query}]
 
