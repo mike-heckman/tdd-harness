@@ -120,7 +120,11 @@ class ToolRegistry:
                 if isinstance(file_cfg, dict):
                     tools_block = file_cfg.get("tools", {})
                     if isinstance(tools_block, dict) and tool_name in tools_block:
-                        return file_cfg.get("config", {})
+                        val = tools_block[tool_name]
+                        if isinstance(val, dict):
+                            return val
+                        elif isinstance(val, list):
+                            return {"errors": val}
         return {}
 
     def get_tool_help(self, tool_name: str) -> dict[str, Any]:

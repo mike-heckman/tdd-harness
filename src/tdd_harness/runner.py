@@ -217,18 +217,53 @@ def orchestrate_global(
     return results
 
 
+def _apply_progressive_hints(
+    result: dict[str, Any], previous_failures: int, tool_config: dict[str, Any] | None
+) -> dict[str, Any]:
+    if result.get("status") == "failed" and result.get("stderr") and tool_config:
+        errors_config = tool_config.get("errors", [])
+        stderr = result["stderr"]
+        hint = ""
+        for err_cfg in errors_config:
+            if isinstance(err_cfg, dict):
+                match_str = err_cfg.get("match", "")
+                if match_str and match_str in stderr:
+                    hints = err_cfg.get("hints", [])
+                    if hints:
+                        hint_idx = min(previous_failures, len(hints) - 1)
+                        hint = hints[hint_idx]
+                        break
+        if hint:
+            result["stderr"] = f"{stderr}\nHint: {hint}"
+    return result
+
+
 # Legacy wrapper implementations routing via the new orchestrated execution
-def run_test_and_coverage(config: TddHarnessConfig, file_path: str | None = None) -> dict[str, Any]:  # Reason: Any
+def run_test_and_coverage(
+    harness_config: TddHarnessConfig,
+    file_path: str | None = None,
+    previous_failures: int = 0,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:  # Reason: Any
     """
     Legacy wrapper for test and coverage.
     """
     if file_path:
-        return orchestrate_targeted(config, file_path)
-    return orchestrate_global(config)
+        results = orchestrate_targeted(harness_config, file_path)
+    else:
+        results = orchestrate_global(harness_config)
+
+    for key, result in results.items():
+        results[key] = _apply_progressive_hints(result, previous_failures, config)
+    return results
 
 
 def run_lint(
-    config: TddHarnessConfig, directories: list | None = None, file_path: str | None = None
+    harness_config: TddHarnessConfig,
+    directories: list | None = None,
+    file_path: str | None = None,
+    previous_failures: int = 0,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:  # Reason: Any
     """
     Legacy wrapper for lint.
@@ -258,24 +293,29 @@ def run_lint(
         response = adapter.run(ToolCall(tool_name="lint", arguments=args))
 
         # Legacy returns single result format
-        return {
+        result = {
             "status": "success" if response.success else "failed",
             "return_code": response.data.get("return_code", 0) if response.data else 0,
             "stdout": response.output or "",
             "stderr": "\n".join(response.errors) if response.errors else "",
         }
+        return _apply_progressive_hints(result, previous_failures, config)
     return results
 
 
-def run_test(config: TddHarnessConfig) -> dict[str, Any]:  # Reason: Any
+def run_test(
+    harness_config: TddHarnessConfig, previous_failures: int = 0, config: dict[str, Any] | None = None
+) -> dict[str, Any]:  # Reason: Any
     """
     Legacy wrapper for run test.
     """
-    return run_test_and_coverage(config)
+    return run_test_and_coverage(harness_config, previous_failures=previous_failures, config=config)
 
 
-def run_coverage(config: TddHarnessConfig) -> dict[str, Any]:  # Reason: Any
+def run_coverage(
+    harness_config: TddHarnessConfig, previous_failures: int = 0, config: dict[str, Any] | None = None
+) -> dict[str, Any]:  # Reason: Any
     """
     Legacy wrapper for run coverage.
     """
-    return run_test_and_coverage(config)
+    return run_test_and_coverage(harness_config, previous_failures=previous_failures, config=config)
