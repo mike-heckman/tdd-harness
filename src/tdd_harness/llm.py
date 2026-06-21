@@ -25,8 +25,30 @@ class LLMClient:
         self.config_loader = config_loader
         self.prompt = prompt
         self.config = config_loader.get_config()  # type: ignore
+        self.llm_config = self.config.llm
         self.history = []
-        self.client = AsyncOpenAI(api_key=self.config.api_key, base_url=self.config.base_url)  # type: ignore
+
+        # Check/fetch configuration values
+        self.client = AsyncOpenAI(api_key=self.llm_config.get("api_key"), base_url=self.llm_config.get("base_url"))  # type: ignore
+        errors: list = []
+        self._model = self.llm_config.get("model", None)
+        if not self._model:
+            errors.append("Model not specified in LLM configuration")
+
+        self._context_size = self.llm_config.get("context_size", None)
+        if not self._context_size:
+            errors.append("Context size not specified in LLM configuration")
+
+        self._minimum_available_context = self.llm_config.get("minimum_available_context", None)
+        if not self._minimum_available_context:
+            errors.append("Minimum available context not specified in LLM configuration")
+
+        self._keep_turns = self.llm_config.get("keep_turns", None)
+        if not self._keep_turns:
+            errors.append("Keep turns not specified in LLM configuration")
+
+        if errors:
+            raise ValueError("\n".join(errors))
 
     async def chat(self, contexts: list[Context]) -> str | None:  # Reason: Could return None on error
         """
@@ -57,16 +79,16 @@ class LLMClient:
         # Logic: (context_size - (system_tokens + incoming_tokens)) < threshold
         # Note: The test implies current_system_tokens + incoming_tokens is compared against context_size
 
-        remaining_context = self.config.context_size - (current_system_tokens + incoming_tokens)
+        remaining_context = self._context_size - (current_system_tokens + incoming_tokens)
 
-        if remaining_context < self.config.minimum_available_context:
+        if remaining_context < self._minimum_available_context:
             # Trigger compression
             # We'll assume the history is the messages passed so far (for this simple implementation)
             # In a real scenario, this would be the existing conversation history.
             compression_messages = [{"role": "user", "content": "Summarize the following history: " + str(messages)}]
 
             comp_response = await self.client.chat.completions.create(
-                model=self.config.model,
+                model=self._model,
                 messages=compression_messages,  # type: ignore
             )
 
@@ -77,7 +99,10 @@ class LLMClient:
             messages = [{"role": "system", "content": summary}, *messages]
 
         # Perform the actual chat
-        response = await self.client.chat.completions.create(model=self.config.model, messages=messages)  # type: ignore
+        response = await self.client.chat.completions.create(
+            model=self._model,
+            messages=messages,  # type: ignore
+        )
 
         # Baseline extraction logic: if system message token size wasn't known, update it.
         # The test checks if prompt.update_token_size was called.
