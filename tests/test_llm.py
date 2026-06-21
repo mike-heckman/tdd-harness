@@ -9,12 +9,14 @@ from src.tdd_harness.llm import LLMClient
 @pytest.fixture
 def mock_config():
     config = MagicMock()
-    config.api_key = "test-key"
-    config.base_url = "https://api.openai.com/v1"
-    config.model = "gpt-4"
-    config.context_size = 8000
-    config.minimum_available_context = 1000
-    config.keep_turns = 1
+    config.llm = {
+        "api_key": "test-key",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4",
+        "context_size": 8000,
+        "minimum_available_context": 1000,
+        "keep_turns": 1,
+    }
     return config
 
 
@@ -136,3 +138,40 @@ async def test_llm_client_compression_rebuilds_history(mock_config, mock_prompt,
 
         # Should contain system message and the summary
         assert any("Summarized content" in m.get("content", "") for m in sent_messages)
+
+
+@pytest.mark.parametrize(
+    "missing_key, error_msg",
+    [
+        ("model", "Model not specified in LLM configuration"),
+        ("context_size", "Context size not specified in LLM configuration"),
+        ("minimum_available_context", "Minimum available context not specified in LLM configuration"),
+        ("keep_turns", "Keep turns not specified in LLM configuration"),
+    ],
+)
+def test_llm_client_missing_config(mock_config, mock_prompt, missing_key, error_msg):
+    """Tests that ValueError is raised if required configuration is missing."""
+    mock_config.llm.pop(missing_key)
+    loader = MagicMock()
+    loader.get_config.return_value = mock_config
+    loader.get_prompt.return_value = mock_prompt
+
+    with pytest.raises(ValueError, match=error_msg):
+        LLMClient(loader, mock_prompt)
+
+
+def test_llm_client_missing_multiple_configs(mock_config, mock_prompt):
+    """Tests that ValueError is raised with multiple accumulated errors."""
+    mock_config.llm.pop("model")
+    mock_config.llm.pop("context_size")
+
+    loader = MagicMock()
+    loader.get_config.return_value = mock_config
+    loader.get_prompt.return_value = mock_prompt
+
+    with pytest.raises(ValueError) as excinfo:
+        LLMClient(loader, mock_prompt)
+
+    error_msg = str(excinfo.value)
+    assert "Model not specified in LLM configuration" in error_msg
+    assert "Context size not specified in LLM configuration" in error_msg
