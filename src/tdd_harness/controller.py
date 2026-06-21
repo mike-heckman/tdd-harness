@@ -74,6 +74,9 @@ class TDDLoopController:
         self.registry.register_python_tool(self.stage_implementation, name="stage_implementation")
         self.registry.register_python_tool(self.stage_test_implementation, name="stage_test_implementation")
         self.registry.register_python_tool(self.ask_researcher, name="ask_researcher")
+        self.registry.register_python_tool(self.install_dependencies, name="install_dependencies")
+        self.registry.register_python_tool(self.search_web, name="search_web")
+        self.registry.register_python_tool(self.download_to_reference, name="download_to_reference")
 
     def _is_path_allowed(self, path: str, is_write: bool) -> bool:
         """
@@ -445,7 +448,10 @@ Return a 2-3 sentence technical summary of the root cause AND a specific, action
         tools: list[Any] = []
         for schema in self.registry.get_openai_schemas():
             tool_name = schema["function"]["name"]
-            if self.registry.tools[tool_name].type.value == "mcp":
+            if self.registry.tools[tool_name].type.value == "mcp" or tool_name in [
+                "search_web",
+                "download_to_reference",
+            ]:
                 tools.append(schema)
 
         max_loops = 10
@@ -497,7 +503,139 @@ Return a 2-3 sentence technical summary of the root cause AND a specific, action
             if val.get("status") != "success":
                 return False
 
+        if not self._process_ready_tasks():
+            return False
+
         return True
+
+    def install_dependencies(self, packages: list[str]) -> str:
+        """
+        Installs the missing dependencies into the virtual environment.
+        """
+        import subprocess
+
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", *packages])
+            return f"Successfully installed: {', '.join(packages)}"
+        except subprocess.CalledProcessError as e:
+            return f"Failed to install dependencies: {e}"
+
+    def search_web(self, query: str) -> str:
+        """
+        Searches the web using duckduckgo-search.
+        """
+        try:
+            from duckduckgo_search import DDGS  # type: ignore
+
+            results = DDGS().text(query, max_results=5)
+            if results:
+                return "\\n".join([f"- [{r['title']}]({r['href']})" for r in results])
+            return "No results found."
+        except ImportError:
+            return "duckduckgo-search not installed"
+
+    def download_to_reference(self, url: str, library_name: str, filename: str) -> str:
+        """
+        Downloads a webpage, converts to markdown, and saves to docs/reference/{library_name}/{filename}.md.
+        """
+        try:
+            import requests  # type: ignore
+            from bs4 import BeautifulSoup  # type: ignore
+            from markdownify import markdownify  # type: ignore
+
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+
+            soup = BeautifulSoup(resp.content, "html.parser")
+            md = markdownify(str(soup), heading_style="ATX")
+
+            target_dir = Path("docs") / "reference" / library_name
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target_path = target_dir / f"{filename}.md"
+            with open(target_path, "w", encoding="utf-8") as f:
+                f.write(md)
+            return f"Successfully saved to {target_path}"
+        except ImportError:
+            return "Missing requests, beautifulsoup4, or markdownify"
+        except Exception as e:
+            return f"Error downloading: {e}"
+
+    def _process_ready_tasks(self) -> bool:
+        """
+        Validates tasks in docs/tasks/ready/ asciibetically.
+        """
+        ready_dir = Path("docs/tasks/ready")
+        error_dir = Path("docs/tasks/error")
+        if not ready_dir.exists():
+            return True
+
+        tasks = sorted(ready_dir.glob("*.md"))
+        for task_path in tasks:
+            try:
+                self._validate_and_provision_task(task_path)
+            except PhaseValidationError as e:
+                error_dir.mkdir(parents=True, exist_ok=True)
+                dest = error_dir / task_path.name
+                shutil.move(task_path, dest)
+                with open(error_dir / f"{task_path.stem}.error.log", "w", encoding="utf-8") as f:
+                    f.write(str(e))
+                return False
+
+        return True
+
+    def _validate_and_provision_task(self, task_path: Path) -> None:
+        content = task_path.read_text(encoding="utf-8")
+        if not content.startswith("---"):
+            raise PhaseValidationError("Missing YAML frontmatter.")
+
+        parts = content.split("---", 2)
+        if len(parts) < 3:
+            raise PhaseValidationError("Invalid YAML frontmatter format.")
+
+        try:
+            frontmatter = yaml.safe_load(parts[1])
+        except yaml.YAMLError as e:
+            raise PhaseValidationError(f"Invalid YAML parsing: {e}") from e
+
+        if not isinstance(frontmatter, dict):
+            raise PhaseValidationError("YAML frontmatter must be a dictionary.")
+
+        for field in ["id", "title", "success_criteria"]:
+            if field not in frontmatter:
+                raise PhaseValidationError(f"Missing required field in frontmatter: {field}")
+
+        if not isinstance(frontmatter.get("success_criteria"), list):
+            raise PhaseValidationError("success_criteria must be a list.")
+
+        if "## Context" not in parts[2]:
+            raise PhaseValidationError("Missing '## Context' Markdown header.")
+
+        deps_block = frontmatter.get("dependencies", {})
+        if isinstance(deps_block, dict):
+            all_deps = deps_block.get("prod", []) + deps_block.get("dev", [])
+            if all_deps:
+                res = self.install_dependencies(all_deps)
+                if "Failed" in res:
+                    raise PhaseValidationError(res)
+
+                # Setup a short asyncio loop to run the subagent if not running
+                import asyncio
+
+                async def run_cyan():
+                    # We group all libraries into one prompt
+                    libs_str = ", ".join(all_deps)
+                    prompt = f"Please search the web for external reference documentation for the following libraries: {libs_str}. Then, use download_to_reference to securely store them in ./docs/reference/<library_name>/."
+                    await self.ask_researcher(prompt)
+                    try:
+                        await self.registry.dispatch("index_folder", {"path": "docs/reference"})
+                    except Exception:
+                        pass
+
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(run_cyan())
+                except RuntimeError:
+                    asyncio.run(run_cyan())
 
     def check_red_exit(self) -> None:
         """
