@@ -4,6 +4,8 @@ LLM Client implementation.
 
 from openai import AsyncOpenAI
 
+from src.tdd_harness.context import Context
+
 
 class LLMClient:
     """
@@ -26,13 +28,14 @@ class LLMClient:
         self.history = []
         self.client = AsyncOpenAI(api_key=self.config.api_key, base_url=self.config.base_url)  # type: ignore
 
-    async def chat(self, messages: list[dict[str, str]]) -> str | None:  # Reason: Could return None on error
+    async def chat(self, contexts: list[Context]) -> str | None:  # Reason: Could return None on error
         """
         Sends messages to the LLM, handling context compression and baseline caching.
 
         Args:
-            messages: A list of message dictionaries.
+            contexts: A list of Context objects.
         """
+        messages = [{"role": c.context_type.value, "content": c.text} for c in contexts]
         # Calculate current total token size (including system message)
         # For simplicity in this implementation, we use the prompt's token_size method
         # which we assume includes the system message.
@@ -48,7 +51,7 @@ class LLMClient:
         # 1 character ~= 1 token (or similar) but the test uses 'a' * 7000.
         # Let's assume 1 char = 1 token for this placeholder to trigger the logic.
 
-        incoming_tokens = sum(len(m.get("content", "")) for m in messages)
+        incoming_tokens = sum((c.token_count or 0) for c in contexts)
 
         # Check if we need to compress
         # Logic: (context_size - (system_tokens + incoming_tokens)) < threshold
