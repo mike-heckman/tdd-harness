@@ -1,5 +1,6 @@
 import asyncio
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -46,13 +47,15 @@ def test_is_path_allowed_phase_constraints(controller):
     assert controller._is_path_allowed("tests/test_main.py", is_write=True)
 
 
+@patch("src.tdd_harness.controller.TDDLoopController._process_ready_tasks")
 @patch("src.tdd_harness.controller.run_lint")
 @patch("src.tdd_harness.controller.run_test")
 @patch("src.tdd_harness.controller.run_coverage")
-def test_pre_flight_validation(mock_cov, mock_test, mock_lint, controller):
+def test_pre_flight_validation(mock_cov, mock_test, mock_lint, mock_tasks, controller):
     mock_lint.return_value = {"status": "success"}
     mock_test.return_value = {"pytest": {"status": "success"}}
     mock_cov.return_value = {"lcov": {"status": "success"}}
+    mock_tasks.return_value = True
 
     assert controller.pre_flight_validation() is True
     assert controller.current_phase == Phase.AMBER
@@ -227,3 +230,76 @@ async def test_success_reject(mock_openai, mock_check_green, mock_lint, controll
     result = await controller.success("Implement feature", task_file=None)
     assert "Validation failed: Review Sub-Agent Rejected the implementation" in result
     assert "REJECT: Missing edge cases." in result
+
+
+@patch("subprocess.check_call")
+def test_install_dependencies(mock_call, controller):
+    res = controller.install_dependencies(["testpkg"])
+    mock_call.assert_called_once()
+    assert "Successfully installed" in res
+
+
+@patch("subprocess.check_call")
+def test_install_dependencies_fail(mock_call, controller):
+    import subprocess
+
+    mock_call.side_effect = subprocess.CalledProcessError(1, "cmd")
+    res = controller.install_dependencies(["testpkg"])
+    assert "Failed to install dependencies" in res
+
+
+def test_validate_and_provision_task_missing_frontmatter(controller, tmp_path):
+    task_file = tmp_path / "0001-task.md"
+    task_file.write_text("No frontmatter")
+    with pytest.raises(PhaseValidationError, match="Missing YAML frontmatter"):
+        controller._validate_and_provision_task(task_file)
+
+
+def test_validate_and_provision_task_valid(controller, tmp_path):
+    task_file = tmp_path / "0002-task.md"
+    task_file.write_text("""---
+id: "123"
+title: "Test"
+success_criteria: []
+dependencies:
+  prod: []
+  dev: []
+---
+## Context
+Testing
+""")
+    # Shouldn't raise
+    with patch.object(controller, "install_dependencies") as mock_install:
+        controller._validate_and_provision_task(task_file)
+        mock_install.assert_not_called()
+
+
+def test_process_ready_tasks_moves_error(controller, tmp_path):
+    # Setup ready and error dirs
+    with patch("src.tdd_harness.controller.Path") as mock_path_cls:
+        mock_ready = MagicMock()
+        mock_error = MagicMock()
+
+        def path_side_effect(arg):
+            if str(arg) == "docs/tasks/ready":
+                return mock_ready
+            if str(arg) == "docs/tasks/error":
+                return mock_error
+            return Path(arg)
+
+        mock_path_cls.side_effect = path_side_effect
+        mock_ready.exists.return_value = True
+
+        # mock a task
+        mock_task = MagicMock()
+        mock_task.name = "0001-test.md"
+        mock_task.stem = "0001-test"
+        mock_ready.glob.return_value = [mock_task]
+
+        with patch.object(controller, "_validate_and_provision_task") as mock_validate:
+            with patch("src.tdd_harness.controller.shutil.move") as mock_move:
+                with patch("src.tdd_harness.controller.open"):
+                    mock_validate.side_effect = PhaseValidationError("Failed")
+                    res = controller._process_ready_tasks()
+                    assert res is False
+                    mock_move.assert_called_once()
