@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.tdd_harness.context import Context, ContextType
 from src.tdd_harness.llm import LLMClient
 
 
@@ -55,7 +56,7 @@ async def test_llm_client_baseline_extraction(mock_config, mock_prompt, mock_con
         client = LLMClient(mock_config_loader, mock_prompt)
         client.client = mock_client
 
-        await client.chat([{"role": "user", "content": "hello"}])
+        await client.chat([Context(text="hello", context_type=ContextType.TASK_CONTEXT, token_count=5)])
 
         # Verify baseline extraction logic
         # If system message was 150 and user msg was small, prompt.update_token_size should be called
@@ -67,7 +68,7 @@ async def test_llm_client_context_compression_trigger(mock_config, mock_prompt, 
     """Tests that compression is triggered when remaining context falls below threshold."""
 
     mock_prompt.token_size.return_value = 500
-    messages = [{"role": "user", "content": "a" * 7000}]
+    messages = [Context(text="a" * 7000, context_type=ContextType.TASK_CONTEXT, token_count=7000)]
 
     with patch("src.tdd_harness.llm.AsyncOpenAI", autospec=True) as mock_openai_class:
         mock_client = mock_openai_class.return_value
@@ -102,7 +103,7 @@ async def test_llm_client_compression_rebuilds_history(mock_config, mock_prompt,
     mock_prompt.token_size.return_value = 500
 
     # Large message to trigger compression
-    messages = [{"role": "user", "content": "a" * 7000}]
+    messages = [Context(text="a" * 7000, context_type=ContextType.TASK_CONTEXT, token_count=7000)]
 
     with patch("src.tdd_harness.llm.AsyncOpenAI", autospec=True) as mock_openai_class:
         mock_client = mock_openai_class.return_value
