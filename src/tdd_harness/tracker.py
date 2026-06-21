@@ -3,7 +3,7 @@ Anti-thrashing tracker for tdd-harness.
 """
 
 import hashlib
-from collections import deque
+from collections import Counter, deque
 
 from src.tdd_harness.models.tool import ToolCall, ToolCallResponse
 
@@ -56,9 +56,9 @@ class AntiThrashingTracker:
         self.tool_call_hashes.append((call_hash, response.success))
 
         # Update failure tracking
-        if not response.success:
-            self.failure_window.append(call_hash)
+        self.failure_window.append((tool_call.tool_name, response.success))
 
+        if not response.success:
             # Check for duplicate failures
             if call_hash == self.last_failure_hash:
                 self.duplicate_failures += 1
@@ -86,9 +86,10 @@ class AntiThrashingTracker:
         if self.duplicate_failures >= self.max_duplicate_failures:
             return True
 
-        # Check for too many failures in the window
-        # We check if the number of failures in the window meets or exceeds max_window_failures
-        if len(self.failure_window) >= self.max_window_failures:
+        # Check for too many failures in the window for a single tool
+        tool_failures_in_window = Counter(tool_name for tool_name, success in self.failure_window if not success)
+
+        if any(count >= self.max_window_failures for count in tool_failures_in_window.values()):
             return True
 
         return False

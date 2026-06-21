@@ -63,18 +63,61 @@ def test_window_failures():
     """Test window-based failure detection."""
     tracker = AntiThrashingTracker(max_window_failures=3, window_size=5)
 
-    # Record 2 failures in a window of size 5
+    # Record 2 failures for the same tool in a window of size 5
     for i in range(2):
-        tracker.record_tool_call(ToolCall(tool_name=f"tool_{i}", arguments={"arg": i}), ToolCallResponse(success=False))
+        tracker.record_tool_call(ToolCall(tool_name="test_tool", arguments={"arg": i}), ToolCallResponse(success=False))
 
     # Should not abort yet (only 2 failures but max_window_failures is 3)
     assert tracker.should_abort() is False
 
-    # Record a 3rd failure to exceed the window limit
-    tracker.record_tool_call(ToolCall(tool_name="tool_2", arguments={"arg": 2}), ToolCallResponse(success=False))
+    # Record a 3rd failure for the same tool to exceed the window limit
+    tracker.record_tool_call(ToolCall(tool_name="test_tool", arguments={"arg": 2}), ToolCallResponse(success=False))
 
     # Should abort now
     assert tracker.should_abort() is True
+
+
+def test_interleaved_tool_calls_in_window():
+    """Test that interleaved successful calls of different tools don't prevent abort if one tool fails repeatedly."""
+    tracker = AntiThrashingTracker(max_window_failures=3, window_size=10)
+
+    # Edit fails
+    tracker.record_tool_call(ToolCall(tool_name="edit", arguments={"a": 1}), ToolCallResponse(success=False))
+    # Read succeeds
+    tracker.record_tool_call(ToolCall(tool_name="read", arguments={"b": 1}), ToolCallResponse(success=True))
+    # Edit fails
+    tracker.record_tool_call(ToolCall(tool_name="edit", arguments={"a": 2}), ToolCallResponse(success=False))
+    # Read succeeds
+    tracker.record_tool_call(ToolCall(tool_name="read", arguments={"b": 2}), ToolCallResponse(success=True))
+
+    # We have 2 edit failures in the window, but we need 3 to abort
+    assert tracker.should_abort() is False
+
+    # Edit fails again
+    tracker.record_tool_call(ToolCall(tool_name="edit", arguments={"a": 3}), ToolCallResponse(success=False))
+
+    # Now we have 3 edit failures in the window, so it should abort
+    assert tracker.should_abort() is True
+
+
+def test_successful_call_prevents_abort():
+    """Test that successful calls push out old failures from the window."""
+    tracker = AntiThrashingTracker(max_window_failures=3, window_size=5)
+
+    # Record 2 failures
+    tracker.record_tool_call(ToolCall(tool_name="fail1", arguments={"a": 1}), ToolCallResponse(success=False))
+    tracker.record_tool_call(ToolCall(tool_name="fail2", arguments={"a": 2}), ToolCallResponse(success=False))
+
+    # Record 4 successes
+    for i in range(4):
+        tracker.record_tool_call(ToolCall(tool_name=f"success{i}", arguments={}), ToolCallResponse(success=True))
+
+    # The first 2 failures should be pushed out of the window of size 5
+    # Record another failure
+    tracker.record_tool_call(ToolCall(tool_name="fail3", arguments={"a": 3}), ToolCallResponse(success=False))
+
+    # Should not abort because there is only 1 failure in the current window
+    assert tracker.should_abort() is False
 
 
 def test_reset():
