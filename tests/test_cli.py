@@ -140,7 +140,6 @@ async def test_async_main_success():
     from unittest.mock import AsyncMock
 
     from src.tdd_harness.cli import async_main
-    from src.tdd_harness.controller import Phase
 
     with (
         patch("src.tdd_harness.cli.sys.exit") as mock_exit,
@@ -148,6 +147,11 @@ async def test_async_main_success():
         patch("src.tdd_harness.cli.MCPClient"),
         patch("src.tdd_harness.cli.ToolRegistry") as mock_registry,
         patch("src.tdd_harness.cli.TDDLoopController") as mock_controller_cls,
+        patch("src.tdd_harness.cli.LLMClient"),
+        patch("src.tdd_harness.cli.Prompt"),
+        patch("src.tdd_harness.cli.Path.exists", return_value=True),
+        patch("src.tdd_harness.cli.Path.glob") as mock_glob,
+        patch("src.tdd_harness.cli.shutil.move") as mock_move,
     ):
         mock_registry_instance = MagicMock()
         mock_registry_instance.initialize = AsyncMock()
@@ -156,15 +160,71 @@ async def test_async_main_success():
 
         mock_controller_instance = MagicMock()
         mock_controller_instance.pre_flight_validation.return_value = True
+        mock_controller_instance.run_blue_phase = AsyncMock()
+        mock_controller_instance.run_red_phase = AsyncMock()
+        mock_controller_instance.run_green_phase = AsyncMock()
         mock_controller_instance.run_magenta_loop = AsyncMock()
         mock_controller_cls.return_value = mock_controller_instance
+
+        mock_task = MagicMock()
+        mock_task.name = "0001-task.md"
+        mock_glob.return_value = [mock_task]
 
         await async_main(Path("/tmp/config"))
 
         mock_controller_instance.pre_flight_validation.assert_called_once()
-        assert mock_controller_instance.current_phase == Phase.GREEN
+        mock_controller_instance.run_blue_phase.assert_awaited_once_with(mock_task)
+        mock_controller_instance.run_red_phase.assert_awaited_once_with(mock_task)
+        mock_controller_instance.run_green_phase.assert_awaited_once_with(mock_task)
         mock_controller_instance.run_magenta_loop.assert_awaited_once()
         mock_exit.assert_not_called()
+        mock_move.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_async_main_phase_green():
+    """Test async_main starts at green phase when specified."""
+    from unittest.mock import AsyncMock
+
+    from src.tdd_harness.cli import async_main
+
+    with (
+        patch("src.tdd_harness.cli.sys.exit") as mock_exit,
+        patch("src.tdd_harness.cli.load_tdd_harness_config"),
+        patch("src.tdd_harness.cli.MCPClient"),
+        patch("src.tdd_harness.cli.ToolRegistry") as mock_registry,
+        patch("src.tdd_harness.cli.TDDLoopController") as mock_controller_cls,
+        patch("src.tdd_harness.cli.LLMClient"),
+        patch("src.tdd_harness.cli.Prompt"),
+        patch("src.tdd_harness.cli.Path.exists", return_value=True),
+        patch("src.tdd_harness.cli.Path.glob") as mock_glob,
+        patch("src.tdd_harness.cli.shutil.move") as mock_move,
+    ):
+        mock_registry_instance = MagicMock()
+        mock_registry_instance.initialize = AsyncMock()
+        mock_registry_instance.dispatch = AsyncMock()
+        mock_registry.return_value = mock_registry_instance
+
+        mock_controller_instance = MagicMock()
+        mock_controller_instance.pre_flight_validation.return_value = True
+        mock_controller_instance.run_blue_phase = AsyncMock()
+        mock_controller_instance.run_red_phase = AsyncMock()
+        mock_controller_instance.run_green_phase = AsyncMock()
+        mock_controller_instance.run_magenta_loop = AsyncMock()
+        mock_controller_cls.return_value = mock_controller_instance
+
+        mock_task = MagicMock()
+        mock_task.name = "0001-task.md"
+        mock_glob.return_value = [mock_task]
+
+        await async_main(Path("/tmp/config"), phase="green")
+
+        mock_controller_instance.run_blue_phase.assert_not_called()
+        mock_controller_instance.run_red_phase.assert_not_called()
+        mock_controller_instance.run_green_phase.assert_awaited_once_with(mock_task)
+        mock_controller_instance.run_magenta_loop.assert_awaited_once()
+        mock_exit.assert_not_called()
+        mock_move.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -180,6 +240,8 @@ async def test_async_main_pre_flight_failure():
         patch("src.tdd_harness.cli.MCPClient"),
         patch("src.tdd_harness.cli.ToolRegistry") as mock_registry,
         patch("src.tdd_harness.cli.TDDLoopController") as mock_controller_cls,
+        patch("src.tdd_harness.cli.LLMClient"),
+        patch("src.tdd_harness.cli.Prompt"),
     ):
         mock_exit.side_effect = SystemExit(1)
         mock_registry_instance = MagicMock()
@@ -195,3 +257,79 @@ async def test_async_main_pre_flight_failure():
 
         assert exc_info.value.code == 1
         mock_exit.assert_called_once_with(1)
+
+
+@pytest.mark.asyncio
+async def test_async_main_no_tasks():
+    """Test async_main exits when no tasks found."""
+    from unittest.mock import AsyncMock
+
+    from src.tdd_harness.cli import async_main
+
+    with (
+        patch("src.tdd_harness.cli.sys.exit") as mock_exit,
+        patch("src.tdd_harness.cli.load_tdd_harness_config"),
+        patch("src.tdd_harness.cli.MCPClient"),
+        patch("src.tdd_harness.cli.ToolRegistry") as mock_registry,
+        patch("src.tdd_harness.cli.TDDLoopController") as mock_controller_cls,
+        patch("src.tdd_harness.cli.LLMClient"),
+        patch("src.tdd_harness.cli.Prompt"),
+        patch("src.tdd_harness.cli.Path.exists", return_value=True),
+        patch("src.tdd_harness.cli.Path.glob", return_value=[]),
+    ):
+        mock_exit.side_effect = SystemExit(1)
+        mock_registry_instance = MagicMock()
+        mock_registry_instance.initialize = AsyncMock()
+        mock_registry_instance.dispatch = AsyncMock()
+        mock_registry.return_value = mock_registry_instance
+
+        mock_controller_instance = MagicMock()
+        mock_controller_instance.pre_flight_validation.return_value = True
+        mock_controller_cls.return_value = mock_controller_instance
+
+        with pytest.raises(SystemExit) as exc_info:
+            await async_main(Path("/tmp/config"))
+
+        assert exc_info.value.code == 1
+        mock_exit.assert_called_once_with(1)
+
+
+@pytest.mark.asyncio
+async def test_async_main_value_error():
+    """Test async_main ignores ValueError on index_repo."""
+    from unittest.mock import AsyncMock
+
+    from src.tdd_harness.cli import async_main
+
+    with (
+        patch("src.tdd_harness.cli.sys.exit") as mock_exit,
+        patch("src.tdd_harness.cli.load_tdd_harness_config"),
+        patch("src.tdd_harness.cli.MCPClient"),
+        patch("src.tdd_harness.cli.ToolRegistry") as mock_registry,
+        patch("src.tdd_harness.cli.TDDLoopController") as mock_controller_cls,
+        patch("src.tdd_harness.cli.LLMClient"),
+        patch("src.tdd_harness.cli.Prompt"),
+        patch("src.tdd_harness.cli.Path.exists", return_value=True),
+        patch("src.tdd_harness.cli.Path.glob") as mock_glob,
+        patch("src.tdd_harness.cli.shutil.move"),
+    ):
+        mock_registry_instance = MagicMock()
+        mock_registry_instance.initialize = AsyncMock()
+        mock_registry_instance.dispatch = AsyncMock(side_effect=ValueError)
+        mock_registry.return_value = mock_registry_instance
+
+        mock_controller_instance = MagicMock()
+        mock_controller_instance.pre_flight_validation.return_value = True
+        mock_controller_instance.run_blue_phase = AsyncMock()
+        mock_controller_instance.run_red_phase = AsyncMock()
+        mock_controller_instance.run_green_phase = AsyncMock()
+        mock_controller_instance.run_magenta_loop = AsyncMock()
+        mock_controller_cls.return_value = mock_controller_instance
+
+        mock_task = MagicMock()
+        mock_task.name = "0001-task.md"
+        mock_glob.return_value = [mock_task]
+
+        await async_main(Path("/tmp/config"))
+
+        mock_exit.assert_not_called()

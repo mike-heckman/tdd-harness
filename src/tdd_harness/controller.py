@@ -65,7 +65,7 @@ class TDDLoopController:
     Responsibility Principle.
     """
 
-    def __init__(self, config: TddHarnessConfig, registry: ToolRegistry):
+    def __init__(self, config: TddHarnessConfig, registry: ToolRegistry, llm_client: LLMClient):
         """
         Initialize the TDDLoopController.
         """
@@ -88,14 +88,7 @@ class TDDLoopController:
         self._phase_successful = False
         self._initial_blue_test_count = 0
 
-        class _ConfigLoaderWrapper:
-            def __init__(self, cfg: TddHarnessConfig) -> None:
-                self.cfg = cfg
-
-            def get_config(self) -> TddHarnessConfig:
-                return self.cfg
-
-        self.llm_client = LLMClient(_ConfigLoaderWrapper(self.config), Prompt("system_message"))
+        self.llm_client = llm_client
         self.review_agent = ReviewSubAgent(self.llm_client)
         self.post_mortem_agent = PostMortemSubAgent(self.llm_client)
         self.research_agent = ResearchSubAgent(self.llm_client)
