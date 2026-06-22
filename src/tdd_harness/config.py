@@ -2,7 +2,10 @@
 Configuration loader and validator for tdd-harness.
 """
 
+import sys
 from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
 import yaml
 from pydantic import BaseModel, Field
@@ -35,6 +38,48 @@ class PromptConfig(BaseModel):
     """
 
     prompt: str
+
+
+class HarnessContext:
+    """
+    Singleton for managing project context and temporary directory paths.
+    """
+
+    _instance = None
+    session_id: str
+    project_dir: Path
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> "HarnessContext":
+        """
+        Create or return the singleton instance.
+        """
+        if not cls._instance:
+            cls._instance = super().__new__(cls)
+            prefix = "test-" if "pytest" in sys.modules else ""
+            cls._instance.session_id = f"{prefix}{uuid4()}"
+            cls._instance.project_dir = Path.cwd()
+        return cls._instance
+
+    @property
+    def backup_dir(self) -> Path:
+        """
+        Return the session backup directory.
+        """
+        return self.project_dir / ".tdd-harness" / self.session_id / "backups"
+
+    @property
+    def reasoning_dir(self) -> Path:
+        """
+        Return the session reasoning directory.
+        """
+        return self.project_dir / ".tdd-harness" / self.session_id / "reasoning"
+
+    @property
+    def reports_dir(self) -> Path:
+        """
+        Return the session reports directory.
+        """
+        return self.project_dir / ".tdd-harness" / self.session_id / "reports"
 
 
 CACHE_TDD_DIRECTORIES: list[Path] = []

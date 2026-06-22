@@ -97,20 +97,6 @@ extensions: []
 """
     (prompts_dir / "compression_prompt.yaml").write_text(compression_prompt_yaml)
 
-    blue_phase_prompt_yaml = """prompt: |
-  You are executing the Blue Phase (Structural Blueprint).
-  Generate rigid interfaces, stubs, and abstract definitions. 
-  Code must pass syntax linting and the existing test suite to prevent breaking changes.
-"""
-    (prompts_dir / "blue_phase_prompt.yaml").write_text(blue_phase_prompt_yaml)
-
-    red_phase_prompt_yaml = """prompt: |
-  You are executing the Red Phase (Test Generation).
-  Write failing tests against the structural interfaces provided in the context. 
-  Tests must fail due to an assertion and must explicitly declare a conceptual docstring or description.
-"""
-    (prompts_dir / "red_phase_prompt.yaml").write_text(red_phase_prompt_yaml)
-
     print(f"Initialized tdd-harness in {config_dir}")
 
 
