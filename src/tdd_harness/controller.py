@@ -15,10 +15,12 @@ import yaml
 from .config import TddHarnessConfig
 from .coverage_parser import LcovParser
 from .llm import LLMClient
+from .models.tool import ToolCall, ToolCallResponse
 from .prompt import Prompt
 from .registry import ToolRegistry
 from .runner import orchestrate_global, orchestrate_targeted, run_coverage, run_lint, run_test
 from .sub_agents import PostMortemSubAgent, ResearchSubAgent, ReviewSubAgent
+from .tracker import AntiThrashingTracker
 
 
 class Phase(Enum):
@@ -60,6 +62,14 @@ class TDDLoopController:
         """
         self.config = config
         self.registry = registry
+
+        at_config_raw = {}
+        if hasattr(self.config, "harness") and isinstance(self.config.harness, dict):
+            at_config_raw = self.config.harness.get("anti_thrashing", {})
+        at_config: dict[str, Any] = at_config_raw if isinstance(at_config_raw, dict) else {}
+        self.tracker = AntiThrashingTracker(**at_config)
+        self.registry.tracker = self.tracker
+
         self.current_phase = Phase.AMBER
         prefix = "test-" if "pytest" in sys.modules else ""
         self.session_id = f"{prefix}{uuid.uuid4()}"
@@ -576,7 +586,25 @@ class TDDLoopController:
         """
         Executes a tool call requested by the LLM.
         """
-        res = await self.registry.dispatch(name, arguments)
+        tool_call = ToolCall(tool_name=name, arguments=arguments)
+
+        try:
+            res = await self.registry.dispatch(name, arguments)
+        except Exception as e:
+            tool_response = ToolCallResponse(success=False, output=str(e))
+            self.tracker.record_tool_call(tool_call, tool_response)
+            if self.tracker.should_abort():
+                self.abort("Anti-thrashing limits exceeded.")
+            raise e
+
+        tool_response = ToolCallResponse(
+            success=res.success, output=str(res.content) if res.content is not None else str(res.error)
+        )
+        self.tracker.record_tool_call(tool_call, tool_response)
+
+        if self.tracker.should_abort():
+            self.abort("Anti-thrashing limits exceeded.")
+
         if not res.success:
             raise RuntimeError(res.error)
         return res.content

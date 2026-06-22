@@ -1,11 +1,20 @@
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.tdd_harness.config import TddHarnessConfig
 from src.tdd_harness.controller import Phase, PhaseValidationError, TDDLoopController
 from src.tdd_harness.registry import ToolRegistry
+
+
+@pytest.fixture(autouse=True)
+def cleanup_reports():
+    yield
+    report_dir = Path("docs/tasks/reports")
+    if report_dir.exists():
+        for f in report_dir.glob("*_report_*.md"):
+            f.unlink()
 
 
 @pytest.fixture
@@ -286,3 +295,29 @@ def test_process_ready_tasks_moves_error(controller, tmp_path):
                     res = controller._process_ready_tasks()
                     assert res is False
                     mock_move.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_thrashing_abort(controller):
+    from src.tdd_harness.registry import ToolCallResult
+
+    # Mock dispatch to return a failure
+    controller.registry.dispatch = AsyncMock(return_value=ToolCallResult(content=None, success=False, error="Fail"))
+
+    # Mock should_abort to return True
+    with patch.object(controller.tracker, "should_abort", return_value=True):
+        with pytest.raises(SystemExit):
+            await controller.execute_tool("my_tool", {"arg": "val"})
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_success_record(controller):
+    from src.tdd_harness.registry import ToolCallResult
+
+    # Mock dispatch to return success
+    controller.registry.dispatch = AsyncMock(return_value=ToolCallResult(content="OK", success=True, error=None))
+
+    with patch.object(controller.tracker, "record_tool_call") as mock_record:
+        res = await controller.execute_tool("my_tool", {"arg": "val"})
+        assert res == "OK"
+        mock_record.assert_called_once()

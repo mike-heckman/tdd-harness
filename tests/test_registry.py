@@ -83,3 +83,18 @@ async def test_get_openai_schemas(registry, mock_mcp_client):
 async def test_dispatch_unknown_tool(registry):
     with pytest.raises(ValueError, match="Unknown tool"):
         await registry.dispatch("unknown", {})
+
+
+def test_schema_generation_types(registry):
+    def my_tool(s: str, i: int, f: float, b: bool, lst: list, untyped) -> str:
+        return "hi"
+
+    registry.register_python_tool(my_tool, name="type_tool")
+    schema = registry.tools["type_tool"].input_schema
+    assert schema["properties"]["s"]["type"] == "string"
+    assert schema["properties"]["i"]["type"] == "integer"
+    assert schema["properties"]["f"]["type"] == "number"
+    assert schema["properties"]["b"]["type"] == "boolean"
+    assert schema["properties"]["lst"]["type"] == "array"
+    assert schema["properties"]["untyped"]["type"] == "string"  # Default
+    assert set(schema["required"]) == {"s", "i", "f", "b", "lst", "untyped"}
