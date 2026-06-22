@@ -84,6 +84,6 @@ def test_load_prompt_config():
         with open(prompt_file, "w") as f:
             yaml.dump(prompt_data, f)
 
-        prompt_config = load_prompt_config(config_dir, "system_message")
+        prompt_config = load_prompt_config("system_message", project_dir=tmp_path)
         assert isinstance(prompt_config, PromptConfig)
         assert prompt_config.prompt == "You are a helpful AI assistant."
