@@ -123,20 +123,22 @@ class TDDLoopController:
 
         # Global Lockdown
         if is_write and parts:
-            if parts[0] == ".tdd-harness":
+            p0 = parts[0].lower()
+            if p0 in (".tdd-harness", ".git"):
                 return False
-            if len(parts) >= 2 and parts[0] == "src" and parts[1] == "tdd_harness":
+            if len(parts) >= 2 and p0 == "src" and parts[1].lower() == "tdd_harness":
                 return False
 
         # Phase-specific Write constraints
         if is_write and parts:
+            p0 = parts[0].lower()
             if self.current_phase in (Phase.AMBER, Phase.BLUE, Phase.GREEN):
                 # src/: rw, test/: ro
-                if parts[0] == "tests":
+                if p0 == "tests":
                     return False
             elif self.current_phase in (Phase.RED, Phase.MAGENTA):
                 # src/: ro, test/: rw
-                if parts[0] == "src":
+                if p0 == "src":
                     return False
 
         return True
@@ -279,40 +281,47 @@ class TDDLoopController:
         self.session_modified_files.add(filepath)
         self.write_file_safe(filepath, code)
 
-        # Run lint
-        lint_res = run_lint(self.config, file_path=filepath)
-        if lint_res.get("status") != "success":
-            stderr = lint_res.get("stderr", "")
-            pm = await self._generate_post_mortem(filepath, stderr)
-            self.past_failure_summaries.append(pm)
+        try:
+            # Run lint
+            lint_res = run_lint(self.config, file_path=filepath)
+            if lint_res.get("status") != "success":
+                stderr = lint_res.get("stderr", "")
+                pm = await self._generate_post_mortem(filepath, stderr)
+                self.past_failure_summaries.append(pm)
+                if backup_path.exists():
+                    shutil.copy2(backup_path, target)
+                else:
+                    target.unlink(missing_ok=True)
+                return f"Linting failed. Reverted file.\\nPost-Mortem Summary & Guidance:\\n{pm}"
+
+            # Run test
+            test_res = orchestrate_targeted(self.config, filepath)
+            any_failed = False
+            errors = []
+            for val in test_res.values():
+                if val.get("status") == "failed":
+                    any_failed = True
+                    stderr = val.get("stderr", "")
+                    if stderr:
+                        errors.append(stderr)
+
+            if any_failed:
+                raw_error = "\\n".join(errors)
+                pm = await self._generate_post_mortem(filepath, raw_error)
+                self.past_failure_summaries.append(pm)
+                if backup_path.exists():
+                    shutil.copy2(backup_path, target)
+                else:
+                    target.unlink(missing_ok=True)
+                return f"Tests failed. Reverted file.\\nPost-Mortem Summary & Guidance:\\n{pm}"
+
+            return "Implementation staged successfully."
+        except Exception:
             if backup_path.exists():
                 shutil.copy2(backup_path, target)
             else:
                 target.unlink(missing_ok=True)
-            return f"Linting failed. Reverted file.\\nPost-Mortem Summary & Guidance:\\n{pm}"
-
-        # Run test
-        test_res = orchestrate_targeted(self.config, filepath)
-        any_failed = False
-        errors = []
-        for val in test_res.values():
-            if val.get("status") == "failed":
-                any_failed = True
-                stderr = val.get("stderr", "")
-                if stderr:
-                    errors.append(stderr)
-
-        if any_failed:
-            raw_error = "\\n".join(errors)
-            pm = await self._generate_post_mortem(filepath, raw_error)
-            self.past_failure_summaries.append(pm)
-            if backup_path.exists():
-                shutil.copy2(backup_path, target)
-            else:
-                target.unlink(missing_ok=True)
-            return f"Tests failed. Reverted file.\\nPost-Mortem Summary & Guidance:\\n{pm}"
-
-        return "Implementation staged successfully."
+            raise
 
     async def stage_test_implementation(self, filepath: str, code: str, test_name: str, test_concept: str) -> str:
         """
@@ -332,41 +341,48 @@ class TDDLoopController:
         self.session_modified_files.add(filepath)
         self.write_file_safe(filepath, code)
 
-        # Run lint
-        lint_res = run_lint(self.config, file_path=filepath)
-        if lint_res.get("status") != "success":
-            stderr = lint_res.get("stderr", "")
-            pm = await self._generate_post_mortem(filepath, stderr)
+        try:
+            # Run lint
+            lint_res = run_lint(self.config, file_path=filepath)
+            if lint_res.get("status") != "success":
+                stderr = lint_res.get("stderr", "")
+                pm = await self._generate_post_mortem(filepath, stderr)
+                if backup_path.exists():
+                    shutil.copy2(backup_path, target)
+                else:
+                    target.unlink(missing_ok=True)
+                return f"Linting failed. Reverted file.\\nPost-Mortem Summary & Guidance:\\n{pm}"
+
+            # Run targeted testing
+            test_res = orchestrate_targeted(self.config, filepath)
+
+            # Verify AssertionError or NotImplementedError
+            has_expected_error = False
+            errors = []
+            for val in test_res.values():
+                if val.get("status") == "failed":
+                    stderr = val.get("stderr", "")
+                    if "AssertionError" in stderr or "NotImplementedError" in stderr:
+                        has_expected_error = True
+                    if stderr:
+                        errors.append(stderr)
+
+            if not has_expected_error:
+                # Revert
+                raw_error = "\n".join(errors) if errors else "Test passed unexpectedly or failed with wrong error."
+                pm = await self._generate_post_mortem(filepath, raw_error)
+                self.past_failure_summaries.append(pm)
+                if backup_path.exists():
+                    shutil.copy2(backup_path, target)
+                else:
+                    target.unlink(missing_ok=True)
+                return f"Error: Test did not fail with AssertionError or NotImplementedError. Reverted file.\nPost-Mortem Summary & Guidance:\n{pm}"
+        except Exception:
             if backup_path.exists():
                 shutil.copy2(backup_path, target)
             else:
                 target.unlink(missing_ok=True)
-            return f"Linting failed. Reverted file.\\nPost-Mortem Summary & Guidance:\\n{pm}"
-
-        # Run targeted testing
-        test_res = orchestrate_targeted(self.config, filepath)
-
-        # Verify AssertionError or NotImplementedError
-        has_expected_error = False
-        errors = []
-        for val in test_res.values():
-            if val.get("status") == "failed":
-                stderr = val.get("stderr", "")
-                if "AssertionError" in stderr or "NotImplementedError" in stderr:
-                    has_expected_error = True
-                if stderr:
-                    errors.append(stderr)
-
-        if not has_expected_error:
-            # Revert
-            raw_error = "\n".join(errors) if errors else "Test passed unexpectedly or failed with wrong error."
-            pm = await self._generate_post_mortem(filepath, raw_error)
-            self.past_failure_summaries.append(pm)
-            if backup_path.exists():
-                shutil.copy2(backup_path, target)
-            else:
-                target.unlink(missing_ok=True)
-            return f"Error: Test did not fail with AssertionError or NotImplementedError. Reverted file.\nPost-Mortem Summary & Guidance:\n{pm}"
+            raise
 
         # Write reasoning
         reasoning_dir = self.harness_ctx.reasoning_dir
@@ -672,9 +688,11 @@ class TDDLoopController:
         except FileNotFoundError:
             logger.warning("No prompt found for blue phase.")
 
-        cb.add_context(Context(text=context_text, context_type=ContextType.TASK_CONTEXT))
+        cb.add_context(
+            Context(text=f"<task_context>\n{context_text}\n</task_context>", context_type=ContextType.TASK_CONTEXT)
+        )
         for criteria in success_criteria:
-            cb.add_context(Context(text=f"Criteria: {criteria}", context_type=ContextType.TASK_CRITERIA))
+            cb.add_context(Context(text=f"<criteria>\n{criteria}\n</criteria>", context_type=ContextType.TASK_CRITERIA))
 
         target_files = frontmatter.get("target_files", [])
         for file in target_files:
@@ -682,7 +700,10 @@ class TDDLoopController:
             if file_path.exists():
                 source = self.read_file_safe(str(file_path))
                 cb.add_context(
-                    Context(text=f"File: {file}\n```python\n{source}\n```", context_type=ContextType.FILE_SOURCE)
+                    Context(
+                        text=f'<file name="{file}">\n```python\n{source}\n```\n</file>',
+                        context_type=ContextType.FILE_SOURCE,
+                    )
                 )
 
         tools = get_tools_for_phase(self.current_phase.value)
@@ -730,9 +751,11 @@ class TDDLoopController:
         except FileNotFoundError:
             logger.warning("No prompt found for red phase.")
 
-        cb.add_context(Context(text=context_text, context_type=ContextType.TASK_CONTEXT))
+        cb.add_context(
+            Context(text=f"<task_context>\n{context_text}\n</task_context>", context_type=ContextType.TASK_CONTEXT)
+        )
         for criteria in success_criteria:
-            cb.add_context(Context(text=f"Criteria: {criteria}", context_type=ContextType.TASK_CRITERIA))
+            cb.add_context(Context(text=f"<criteria>\n{criteria}\n</criteria>", context_type=ContextType.TASK_CRITERIA))
 
         target_files = frontmatter.get("target_files", [])
         for file in target_files:
@@ -740,7 +763,10 @@ class TDDLoopController:
             if file_path.exists():
                 source = self.read_file_safe(str(file_path))
                 cb.add_context(
-                    Context(text=f"File: {file}\n```python\n{source}\n```", context_type=ContextType.FILE_SOURCE)
+                    Context(
+                        text=f'<file name="{file}">\n```python\n{source}\n```\n</file>',
+                        context_type=ContextType.FILE_SOURCE,
+                    )
                 )
 
         tools = get_tools_for_phase(self.current_phase.value)
@@ -798,9 +824,11 @@ class TDDLoopController:
         except FileNotFoundError:
             logger.warning("No prompt found for green phase.")
 
-        cb.add_context(Context(text=context_text, context_type=ContextType.TASK_CONTEXT))
+        cb.add_context(
+            Context(text=f"<task_context>\n{context_text}\n</task_context>", context_type=ContextType.TASK_CONTEXT)
+        )
         for criteria in success_criteria:
-            cb.add_context(Context(text=f"Criteria: {criteria}", context_type=ContextType.TASK_CRITERIA))
+            cb.add_context(Context(text=f"<criteria>\n{criteria}\n</criteria>", context_type=ContextType.TASK_CRITERIA))
 
         target_files = frontmatter.get("target_files", [])
         for file in target_files:
@@ -808,7 +836,10 @@ class TDDLoopController:
             if file_path.exists():
                 source = self.read_file_safe(str(file_path))
                 cb.add_context(
-                    Context(text=f"File: {file}\n```python\n{source}\n```", context_type=ContextType.FILE_SOURCE)
+                    Context(
+                        text=f'<file name="{file}">\n```python\n{source}\n```\n</file>',
+                        context_type=ContextType.FILE_SOURCE,
+                    )
                 )
 
         # Load Test Concepts
