@@ -6,7 +6,8 @@ import json
 
 from openai import AsyncOpenAI
 
-from src.tdd_harness.context import Context, ContextType
+from src.tdd_harness.config import load_prompt_config
+from src.tdd_harness.context import Context, ContextBuilder, ContextType
 
 
 class LLMClient:
@@ -55,9 +56,6 @@ class LLMClient:
         """
         Compresses the active conversation history when token limits are reached.
         """
-        from src.tdd_harness.config import load_prompt_config
-        from src.tdd_harness.context import ContextBuilder
-
         flat_dicts = [c.as_openai_message() for c in flat_history]
         new_dicts = [c.as_openai_message() for c in new_contexts]
 
@@ -137,8 +135,6 @@ class LLMClient:
             tools: Optional list of OpenAI-compatible tool schemas.
             registry: Optional tool registry for executing tool calls.
         """
-        from src.tdd_harness.context import ContextBuilder
-
         cb = ContextBuilder()
 
         # Add incoming contexts if they aren't already in the builder
@@ -149,11 +145,13 @@ class LLMClient:
         system_context = self.prompt.get_system_message(model=self._model)  # type: ignore
         system_tokens = system_context.token_count or 0
 
+        incoming_tokens = sum((c.token_count or max(1, len(c.text) // 4)) for c in contexts)
+        if (self._context_size - (system_tokens + incoming_tokens)) < self._minimum_available_context:
+            raise RuntimeError("Context Exhausted: Static context (system + task) exceeds available room.")
+
         # Current snapshot of the entire conversation block
         flat_history = cb.get_context()
         history_tokens = sum((c.token_count or max(1, len(c.text) // 4)) for c in flat_history)
-
-        incoming_tokens = sum((c.token_count or max(1, len(c.text) // 4)) for c in contexts)
 
         remaining_context = self._context_size - (system_tokens + incoming_tokens + history_tokens)
 

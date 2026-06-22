@@ -2,9 +2,13 @@
 TDD Loop Controller Module.
 """
 
+import asyncio
 import difflib
+import hashlib
+import json
 import logging
 import shutil
+import subprocess
 import sys
 from enum import Enum
 from pathlib import Path
@@ -19,7 +23,7 @@ from .llm import LLMClient
 from .models.tool import ToolCall, ToolCallResponse
 from .prompt import Prompt
 from .registry import ToolRegistry
-from .runner import orchestrate_global, orchestrate_targeted, run_coverage, run_lint, run_test
+from .runner import orchestrate_global, orchestrate_targeted, run_lint, run_test, run_test_and_coverage
 from .sub_agents import PostMortemSubAgent, ResearchSubAgent, ReviewSubAgent
 from .tool_schemas import get_tools_for_phase
 from .tracker import AntiThrashingTracker
@@ -92,6 +96,7 @@ class TDDLoopController:
         self.review_agent = ReviewSubAgent(self.llm_client)
         self.post_mortem_agent = PostMortemSubAgent(self.llm_client)
         self.research_agent = ResearchSubAgent(self.llm_client)
+        self._post_mortem_cache: dict[str, str] = {}
 
         # Register built-in file operations wrapped with security interceptors
         self.registry.register_python_tool(self.read_file_safe, name="read_file")
@@ -260,8 +265,17 @@ class TDDLoopController:
         """
         Generates a post-mortem summary for a failure using a secondary LLM call.
         """
+        cache_key = hashlib.sha256(f"{filepath}:{raw_error}".encode()).hexdigest()
+        if cache_key in getattr(self, "_post_mortem_cache", {}):
+            return self._post_mortem_cache[cache_key]
+
         code = self.read_file_safe(filepath)
-        return await self.post_mortem_agent.generate(filepath, code, raw_error)
+        pm = await self.post_mortem_agent.generate(filepath, code, raw_error)
+
+        if not hasattr(self, "_post_mortem_cache"):
+            self._post_mortem_cache = {}
+        self._post_mortem_cache[cache_key] = pm
+        return pm
 
     async def stage_implementation(self, filepath: str, code: str) -> str:
         """
@@ -420,14 +434,11 @@ class TDDLoopController:
         if lint_res.get("status") != "success":
             return False
 
-        test_res = run_test(self.config)
-        for val in test_res.values():
-            if val.get("status") != "success":
+        res = run_test_and_coverage(self.config)
+        for key, val in res.items():
+            if key.startswith("test_") and val.get("status") != "success":
                 return False
-
-        cov_res = run_coverage(self.config)
-        for val in cov_res.values():
-            if val.get("status") != "success":
+            if key.startswith("cov_") and val.get("status") != "success":
                 return False
 
         if not self._process_ready_tasks():
@@ -439,8 +450,6 @@ class TDDLoopController:
         """
         Installs the missing dependencies into the virtual environment.
         """
-        import subprocess
-
         try:
             subprocess.check_call([sys.executable, "-m", "pip", "install", *packages])
             return f"Successfully installed: {', '.join(packages)}"
@@ -546,8 +555,6 @@ class TDDLoopController:
                     raise PhaseValidationError(res)
 
                 # Setup a short asyncio loop to run the subagent if not running
-                import asyncio
-
                 async def run_cyan():
                     # We group all libraries into one prompt
                     libs_str = ", ".join(all_deps)
@@ -590,8 +597,6 @@ class TDDLoopController:
         Returns:
             The number of tests executed as an integer.
         """
-        import json
-
         report_log_path = self.harness_ctx.reports_dir / "pytest-report.jsonl"
         count = 0
         if report_log_path.exists():
