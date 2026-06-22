@@ -98,6 +98,21 @@ async def test_call_tool_success(mock_stdio_client, mock_client_session):
 
 
 @pytest.mark.asyncio
+async def test_call_tool_failure(mock_stdio_client, mock_client_session):
+    """Test calling a tool that raises an exception."""
+    config = {"command": "echo", "args": ["hello"], "restart_policy": "exit"}
+    client = MCPClient(config)
+    await client.connect()
+
+    mock_client_session.call_tool.side_effect = Exception("Tool error")
+
+    with patch.object(client, "handle_failure") as mock_handle:
+        with pytest.raises(Exception, match="Tool error"):
+            await client.call_tool("test_tool", {"arg": "val"})
+        mock_handle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @patch("src.tdd_harness.mcp_client.sys.exit")
 @patch("src.tdd_harness.mcp_client.print")
 async def test_handle_failure_exit_policy(mock_print, mock_exit, mock_stdio_client, mock_client_session):
@@ -170,3 +185,30 @@ async def test_handle_failure_always_policy(mock_sleep, mock_stdio_client, mock_
         mock_sleep.assert_awaited_once_with(1)
         mock_close.assert_awaited_once()
         assert client._retry_count == 0  # Resets on success
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.mcp_client.sys.exit")
+@patch("src.tdd_harness.mcp_client.print")
+async def test_handle_failure_masks_secrets(mock_print, mock_exit, mock_stdio_client, mock_client_session):
+    """Test that API keys in env are redacted from error messages."""
+    config = {
+        "command": "echo",
+        "args": ["hello"],
+        "restart_policy": "exit",
+        "env": {"OPENAI_API_KEY": "supersecretkey123", "SAFE_VAR": "hello"},
+    }
+    client = MCPClient(config)
+
+    # Force an error containing the secret
+    mock_client_session.initialize.side_effect = Exception("Command failed with supersecretkey123 and SAFE_VAR=hello")
+
+    await client.connect()
+
+    mock_exit.assert_called_once_with(1)
+    mock_print.assert_called_once()
+
+    printed_msg = mock_print.call_args[0][0]
+    assert "supersecretkey123" not in printed_msg
+    assert "***" in printed_msg
+    assert "SAFE_VAR=hello" in printed_msg

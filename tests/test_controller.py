@@ -55,6 +55,13 @@ def test_is_path_allowed_global_lockdown(controller):
     # Cannot write to src/tdd_harness/
     assert not controller._is_path_allowed("src/tdd_harness/runner.py", is_write=True)
 
+    # Case-insensitivity checks
+    assert not controller._is_path_allowed(".TDD-HARNESS/config.yaml", is_write=True)
+    assert not controller._is_path_allowed("SRC/TDD_HARNESS/runner.py", is_write=True)
+
+    # .git lockdown
+    assert not controller._is_path_allowed(".git/config", is_write=True)
+
 
 def test_is_path_allowed_phase_constraints(controller):
     # AMBER phase: src is rw, test is ro
@@ -316,6 +323,24 @@ async def test_stage_implementation_lint_failure(
 
 @pytest.mark.asyncio
 @patch("src.tdd_harness.controller.run_lint")
+@patch("src.tdd_harness.controller.TDDLoopController._is_path_allowed", return_value=True)
+async def test_stage_implementation_crash_safe(mock_is_path_allowed, mock_lint, controller, tmp_path):
+    controller.current_phase = Phase.BLUE
+    test_file = tmp_path / "test_file.py"
+    test_file.write_text("print('hello')")
+
+    # Mock lint throwing an unhandled exception
+    mock_lint.side_effect = RuntimeError("Crash during linting")
+
+    with pytest.raises(RuntimeError, match="Crash during linting"):
+        await controller.stage_implementation(str(test_file), "print('hello_new')")
+
+    # Verify file was reverted
+    assert test_file.read_text() == "print('hello')"
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.controller.run_lint")
 @patch("src.tdd_harness.controller.orchestrate_targeted")
 @patch("src.tdd_harness.controller.TDDLoopController._generate_post_mortem")
 @patch("src.tdd_harness.controller.TDDLoopController._is_path_allowed", return_value=True)
@@ -436,11 +461,13 @@ def test_process_ready_tasks_moves_error(controller, tmp_path):
 
         with patch.object(controller, "_validate_and_provision_task") as mock_validate:
             with patch("src.tdd_harness.controller.shutil.move") as mock_move:
-                with patch("src.tdd_harness.controller.open"):
+                with patch("src.tdd_harness.controller.open") as mock_open:
                     mock_validate.side_effect = PhaseValidationError("Failed")
                     res = controller._process_ready_tasks()
                     assert res is False
                     mock_move.assert_called_once()
+                    mock_open.assert_called_once()
+                    mock_open.return_value.__enter__.return_value.write.assert_called_once_with("Failed")
 
 
 @pytest.mark.asyncio
@@ -682,3 +709,73 @@ async def test_stage_test_implementation_wrong_phase(controller):
     controller.current_phase = Phase.GREEN
     res = await controller.stage_test_implementation("f.py", "c", "t", "c")
     assert "can only be used in the Red" in res
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.controller.run_lint")
+@patch("src.tdd_harness.controller.TDDLoopController._is_path_allowed", return_value=True)
+async def test_stage_test_implementation_crash_safe(mock_is_path_allowed, mock_lint, controller, tmp_path):
+    controller.current_phase = Phase.RED
+    test_file = tmp_path / "test_file.py"
+    test_file.write_text("print('hello')")
+
+    # Mock lint throwing an unhandled exception
+    mock_lint.side_effect = RuntimeError("Crash during linting")
+
+    with pytest.raises(RuntimeError, match="Crash during linting"):
+        await controller.stage_test_implementation(str(test_file), "print('hello_new')", "t", "c")
+
+    # Verify file was reverted
+    assert test_file.read_text() == "print('hello')"
+
+
+def test_is_path_allowed_phase_specific_lower(controller):
+    # Test case-insensitive check
+    controller.current_phase = Phase.GREEN
+    assert not controller._is_path_allowed("TESTS/test_app.py", is_write=True)
+
+    controller.current_phase = Phase.RED
+    assert not controller._is_path_allowed("SRC/app.py", is_write=True)
+
+
+def test_is_path_allowed_global_lockdown_git(controller):
+    # Test .git lockdown
+    assert not controller._is_path_allowed(".GIT/config", is_write=True)
+    assert not controller._is_path_allowed(".git/HEAD", is_write=True)
+    assert controller._is_path_allowed(".git/config", is_write=False)
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.controller.run_lint")
+@patch("src.tdd_harness.controller.TDDLoopController.check_green_exit")
+async def test_success_fallback_task_file(mock_check_green, mock_lint, controller, tmp_path):
+    controller.current_phase = Phase.GREEN
+    mock_lint.return_value = {"status": "success"}
+
+    from unittest.mock import AsyncMock
+
+    controller.review_agent.review = AsyncMock(return_value="APPROVE")
+
+    # Mock ready dir and task file
+    ready_dir = tmp_path / "docs" / "tasks" / "ready"
+    ready_dir.mkdir(parents=True, exist_ok=True)
+    (ready_dir / "0001-task.md").write_text("Fallback task content")
+
+    with patch("src.tdd_harness.controller.Path") as mock_path_cls:
+        # Simple side effect that resolves the glob to our tmp task
+        def path_side_effect(arg):
+            if str(arg) == "docs/tasks/ready":
+                p = MagicMock()
+                p.exists.return_value = True
+                p.glob.return_value = [ready_dir / "0001-task.md"]
+                return p
+            return Path(arg)
+
+        mock_path_cls.side_effect = path_side_effect
+
+        result = await controller.success("Implement feature", task_file=None)
+        assert result == "Phase completed successfully."
+
+        # Verify the fallback content was read
+        args, _ = controller.review_agent.review.call_args
+        assert args[0] == "Fallback task content"

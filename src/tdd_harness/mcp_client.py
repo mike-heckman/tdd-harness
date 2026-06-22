@@ -40,8 +40,16 @@ class MCPClient:
         """
         Handle MCP server failure according to restart policy.
         """
+        error_msg = str(error)
+        if self.server_config and "env" in self.server_config:
+            env = self.server_config["env"]
+            if env:
+                for k, v in env.items():
+                    if v and any(sensitive in k.lower() for sensitive in ["key", "secret", "token", "pwd", "password"]):
+                        error_msg = error_msg.replace(str(v), "***")
+
         if self.restart_policy == "exit":
-            print(f"MCP server failure (policy='exit'): {error}", file=sys.stderr)
+            print(f"MCP server failure (policy='exit'): {error_msg}", file=sys.stderr)
             sys.exit(1)
         elif self.restart_policy == "on-failure":
             if self._retry_count < 1:
@@ -49,7 +57,7 @@ class MCPClient:
                 await self.close()
                 await self.connect()
             else:
-                print(f"MCP server failure (policy='on-failure'): retries exhausted. {error}", file=sys.stderr)
+                print(f"MCP server failure (policy='on-failure'): retries exhausted. {error_msg}", file=sys.stderr)
         elif self.restart_policy == "always":
             await asyncio.sleep(1)
             await self.close()
