@@ -98,3 +98,100 @@ def test_schema_generation_types(registry):
     assert schema["properties"]["lst"]["type"] == "array"
     assert schema["properties"]["untyped"]["type"] == "string"  # Default
     assert set(schema["required"]) == {"s", "i", "f", "b", "lst", "untyped"}
+
+
+@pytest.mark.asyncio
+async def test_registry_with_tracker_and_config():
+    tracker = MagicMock()
+    tracker.get_previous_failures.return_value = 1
+
+    tool_configs = {
+        "file1": {
+            "tools": {
+                "py_tool": {
+                    "detailed_description": "det_desc",
+                    "syntax_examples": ["ex1"],
+                    "errors": [{"match": "Oops", "hints": ["Hint 0", "Hint 1", "Hint 2"]}],
+                },
+                "list_tool": ["error1", "error2"],
+            }
+        }
+    }
+
+    registry = ToolRegistry(tracker=tracker, tool_configs=tool_configs)
+
+    def py_tool(x: int, previous_failures: int, config: dict) -> str:
+        if x == 0:
+            raise ValueError("Oops something went wrong")
+        return f"{previous_failures}-{config.get('detailed_description')}"
+
+    registry.register_python_tool(py_tool)
+    assert registry.tools["py_tool"].detailed_description == "det_desc"
+
+    res = await registry.dispatch("py_tool", {"x": 1})
+    assert res.content == "1-det_desc"
+    assert res.success is True
+
+    res = await registry.dispatch("py_tool", {"x": 0})
+    assert res.success is False
+    assert "Oops something went wrong" in res.error
+    assert "Hint: Hint 1" in res.error
+
+
+@pytest.mark.asyncio
+async def test_dispatch_mcp_tool_error(registry, mock_mcp_client):
+    await registry.initialize()
+    mock_mcp_client.call_tool.return_value = {"isError": True, "content": "MCP failed"}
+    res = await registry.dispatch("mcp_tool", {"arg1": "val"})
+    assert res.success is False
+    assert "MCP failed" in res.error
+
+
+@pytest.mark.asyncio
+async def test_dispatch_mcp_tool_string_response(registry, mock_mcp_client):
+    await registry.initialize()
+    mock_mcp_client.call_tool.return_value = "raw string response"
+    res = await registry.dispatch("mcp_tool", {"arg1": "val"})
+    assert res.content == "raw string response"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_async_python_tool(registry):
+    async def async_tool():
+        return "async success"
+
+    registry.register_python_tool(async_tool)
+    res = await registry.dispatch("async_tool", {})
+    assert res.content == "async success"
+
+
+def test_get_tool_help(registry):
+    registry.register_python_tool(lambda x: x, name="t1", description="desc")
+    help_data = registry.get_tool_help("t1")
+    assert help_data["description"] == "desc"
+
+    err_data = registry.get_tool_help("unknown")
+    assert "error" in err_data
+
+
+def test_get_tool_config_block_list_errors():
+    tool_configs = {"f": {"tools": {"t": ["e1", "e2"]}}}
+    from src.tdd_harness.registry import ToolRegistry
+
+    registry = ToolRegistry(tool_configs=tool_configs)
+    meta = registry._get_tool_metadata("t")
+    assert meta == {"errors": ["e1", "e2"]}
+
+    cfg = registry._get_tool_config_block("t")
+    assert cfg == {"errors": ["e1", "e2"]}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_no_func():
+    from src.tdd_harness.registry import ToolEntry, ToolRegistry, ToolType
+
+    registry = ToolRegistry()
+    registry.tools["nofunc"] = ToolEntry(name="nofunc", tool_type=ToolType.PYTHON, description="", input_schema={})
+    res = await registry.dispatch("nofunc", {})
+    assert res.success is False
+    assert "No function defined" in res.error

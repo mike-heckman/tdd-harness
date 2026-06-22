@@ -16,7 +16,7 @@ AVAILABLE_TOOLS: list[dict[str, Any]] = [
                 "required": ["query"],
             },
         },
-        "valid_phases": ["blue", "red", "green"],
+        "valid_phases": ["blue", "red", "green", "magenta"],
     },
     {
         "type": "function",
@@ -29,7 +29,7 @@ AVAILABLE_TOOLS: list[dict[str, Any]] = [
                 "required": ["symbol"],
             },
         },
-        "valid_phases": ["blue", "red", "green"],
+        "valid_phases": ["blue", "red", "green", "magenta"],
     },
     {
         "type": "function",
@@ -42,7 +42,7 @@ AVAILABLE_TOOLS: list[dict[str, Any]] = [
                 "required": ["query"],
             },
         },
-        "valid_phases": ["blue", "red", "green"],
+        "valid_phases": ["blue", "red", "green", "magenta"],
     },
     {
         "type": "function",
@@ -73,7 +73,7 @@ AVAILABLE_TOOLS: list[dict[str, Any]] = [
                 "required": ["filepath", "code", "test_name", "test_concept"],
             },
         },
-        "valid_phases": ["red"],
+        "valid_phases": ["red", "magenta"],
     },
     {
         "type": "function",
