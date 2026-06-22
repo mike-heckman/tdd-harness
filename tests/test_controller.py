@@ -217,6 +217,58 @@ async def test_run_red_phase_post_mortem_injection(controller, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_green_phase(controller, tmp_path):
+    task_file = tmp_path / "task.md"
+    task_file.write_text(
+        "---\nsuccess_criteria:\n  - 'Do a thing'\ntarget_files:\n  - 'dummy.py'\n---\n## Context\nTest"
+    )
+
+    async def mock_chat(*args, **kwargs):
+        controller._phase_successful = True
+
+    with patch.object(controller.llm_client, "chat", new=mock_chat):
+        with patch.object(controller, "read_file_safe", return_value="print('dummy')"):
+            with patch("src.tdd_harness.controller.Path.exists", return_value=True):
+                await controller.run_green_phase(task_file)
+
+    assert controller.current_phase == Phase.GREEN
+
+
+@pytest.mark.asyncio
+async def test_run_green_phase_post_mortem_injection(controller, tmp_path):
+    task_file = tmp_path / "task.md"
+    task_file.write_text(
+        "---\nsuccess_criteria:\n  - 'Do a thing'\ntarget_files:\n  - 'dummy.py'\n---\n## Context\nTest"
+    )
+
+    chat_call_count = 0
+
+    async def mock_chat(*args, **kwargs):
+        nonlocal chat_call_count
+        chat_call_count += 1
+
+        if chat_call_count == 1:
+            # First turn: simulate a failure being appended
+            controller.past_failure_summaries.append("Simulated test failure guidance")
+        else:
+            # Second turn: verify ContextBuilder has the failure
+            from src.tdd_harness.context import ContextBuilder
+
+            cb = ContextBuilder()
+            feedback_contexts = [ctx for ctx in cb.get_context() if "Simulated test failure guidance" in ctx.text]
+            assert len(feedback_contexts) == 1
+            controller._phase_successful = True
+
+    with patch.object(controller.llm_client, "chat", new=mock_chat):
+        with patch.object(controller, "read_file_safe", return_value="print('dummy')"):
+            with patch("src.tdd_harness.controller.Path.exists", return_value=True):
+                await controller.run_green_phase(task_file)
+
+    assert controller.current_phase == Phase.GREEN
+    assert chat_call_count == 2
+
+
+@pytest.mark.asyncio
 @patch("src.tdd_harness.controller.run_lint")
 @patch("src.tdd_harness.controller.orchestrate_targeted")
 @patch("src.tdd_harness.controller.TDDLoopController._generate_post_mortem")

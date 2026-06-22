@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from src.tdd_harness.adapters.base import TestAdapter
+from src.tdd_harness.config import HarnessContext
 from src.tdd_harness.models.tool import ToolCall, ToolCallResponse
 
 
@@ -24,7 +25,7 @@ class PytestAdapter(TestAdapter):
         """
         file_path = tool_call.arguments.get("file_path")
         coverage_dir = tool_call.arguments.get("coverage_dir")
-        report_log_path = Path("temp/pytest-report.jsonl")
+        report_log_path = HarnessContext().reports_dir / "pytest-report.jsonl"
 
         # Ensure temp directory exists
         report_log_path.parent.mkdir(parents=True, exist_ok=True)

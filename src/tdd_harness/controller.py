@@ -6,14 +6,13 @@ import difflib
 import logging
 import shutil
 import sys
-import uuid
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from .config import TddHarnessConfig
+from .config import HarnessContext, TddHarnessConfig
 from .context import Context, ContextBuilder, ContextType
 from .coverage_parser import LcovParser
 from .llm import LLMClient
@@ -81,8 +80,8 @@ class TDDLoopController:
         self.registry.tracker = self.tracker
 
         self.current_phase = Phase.AMBER
-        prefix = "test-" if "pytest" in sys.modules else ""
-        self.session_id = f"{prefix}{uuid.uuid4()}"
+        self.harness_ctx = HarnessContext()
+        self.session_id = self.harness_ctx.session_id
 
         self.past_failure_summaries: list[str] = []
         self.session_modified_files: set[str] = set()
@@ -193,7 +192,7 @@ class TDDLoopController:
 
         # Invoke Review Sub-Agent
         diffs = []
-        backup_dir = Path(".tdd-harness/backups") / self.session_id
+        backup_dir = self.harness_ctx.backup_dir
         for filepath in self.session_modified_files:
             target = Path(filepath)
             backup_path = backup_dir / f"{target.name}.bak"
@@ -234,7 +233,7 @@ class TDDLoopController:
         if reviewer_response.startswith("REJECT"):
             return f"Validation failed: Review Sub-Agent Rejected the implementation.\\nCritique: {reviewer_response}"
 
-        report_dir = Path("docs/tasks/reports")
+        report_dir = self.harness_ctx.reports_dir
         report_dir.mkdir(parents=True, exist_ok=True)
         report_file = report_dir / f"success_report_{self.session_id}.md"
         with open(report_file, "w") as f:
@@ -255,7 +254,7 @@ class TDDLoopController:
         """
         Explicit escape hatch to pause the loop.
         """
-        report_dir = Path("docs/tasks/reports")
+        report_dir = self.harness_ctx.reports_dir
         report_dir.mkdir(parents=True, exist_ok=True)
         report_file = report_dir / f"abort_report_{self.session_id}.md"
         with open(report_file, "w") as f:
@@ -277,7 +276,7 @@ class TDDLoopController:
             return "Error: stage_implementation can only be used in the Blue or Green phase."
 
         target = Path(filepath)
-        backup_dir = Path(".tdd-harness/backups") / self.session_id
+        backup_dir = self.harness_ctx.backup_dir
         backup_dir.mkdir(parents=True, exist_ok=True)
         backup_path = backup_dir / f"{target.name}.bak"
 
@@ -330,7 +329,7 @@ class TDDLoopController:
             return "Error: stage_test_implementation can only be used in the Red phase."
 
         target = Path(filepath)
-        backup_dir = Path(".tdd-harness/backups") / self.session_id
+        backup_dir = self.harness_ctx.backup_dir
         backup_dir.mkdir(parents=True, exist_ok=True)
         backup_path = backup_dir / f"{target.name}.bak"
 
@@ -377,7 +376,9 @@ class TDDLoopController:
             return f"Error: Test did not fail with AssertionError or NotImplementedError. Reverted file.\nPost-Mortem Summary & Guidance:\n{pm}"
 
         # Write reasoning
-        reasoning_file = Path(f"{target.name}-reasoning.yaml")
+        reasoning_dir = self.harness_ctx.reasoning_dir
+        reasoning_dir.mkdir(parents=True, exist_ok=True)
+        reasoning_file = reasoning_dir / f"{target.name}.yaml"
         reasoning_data = {}
         if reasoning_file.exists():
             with open(reasoning_file) as f:
@@ -582,7 +583,7 @@ class TDDLoopController:
         """
         import json
 
-        report_log_path = Path("temp/pytest-report.jsonl")
+        report_log_path = self.harness_ctx.reports_dir / "pytest-report.jsonl"
         count = 0
         if report_log_path.exists():
             with open(report_log_path, encoding="utf-8") as f:
@@ -770,6 +771,96 @@ class TDDLoopController:
 
             if self._phase_successful:
                 self._red_loop_active = False
+                break
+
+            if self.tracker.should_abort():
+                self.abort("Anti-thrashing limits exceeded.")
+
+    async def run_green_phase(self, task_file: Path) -> None:
+        """
+        Orchestrates the Green (Develop Implementation) phase end-to-end.
+        """
+        self.current_phase = Phase.GREEN
+        self._phase_successful = False
+
+        # Assemble Context
+        task_content = task_file.read_text(encoding="utf-8")
+        if "---" in task_content:
+            parts = task_content.split("---", 2)
+            frontmatter = yaml.safe_load(parts[1])
+            context_text = parts[2].strip()
+        else:
+            frontmatter = {}
+            context_text = task_content
+
+        success_criteria = frontmatter.get("success_criteria", [])
+
+        cb = ContextBuilder()
+        cb.clear()
+
+        # Add phase instructions
+        try:
+            phase_prompt = Prompt("green_phase_prompt").get_system_message()
+            cb.add_context(phase_prompt)
+        except FileNotFoundError:
+            logger.warning("No prompt found for green phase.")
+
+        cb.add_context(Context(text=context_text, context_type=ContextType.TASK_CONTEXT))
+        for criteria in success_criteria:
+            cb.add_context(Context(text=f"Criteria: {criteria}", context_type=ContextType.TASK_CRITERIA))
+
+        target_files = frontmatter.get("target_files", [])
+        for file in target_files:
+            file_path = Path(file)
+            if file_path.exists():
+                source = self.read_file_safe(str(file_path))
+                cb.add_context(
+                    Context(text=f"File: {file}\n```python\n{source}\n```", context_type=ContextType.FILE_SOURCE)
+                )
+
+        # Load Test Concepts
+        reasoning_dir = self.harness_ctx.reasoning_dir
+        if reasoning_dir.exists():
+            reasoning_files = list(reasoning_dir.glob("*.yaml"))
+        else:
+            reasoning_files = []
+        for r_file in reasoning_files:
+            try:
+                with open(r_file, encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+                    for test_name, sessions in data.items():
+                        for _sess_id, concept in sessions.items():
+                            if _sess_id == self.session_id:
+                                cb.add_context(
+                                    Context(
+                                        text=f"Test Concept ({test_name}): {concept}",
+                                        context_type=ContextType.TEST_CONCEPTS,
+                                    )
+                                )
+            except Exception as e:
+                logger.warning(f"Failed to load reasoning file {r_file}: {e}")
+
+        tools = get_tools_for_phase(self.current_phase.value)
+
+        self.tracker.reset()
+        self.past_failure_summaries.clear()
+
+        # Tool-call loop
+        self._green_loop_active = True
+        last_failure_count = 0
+        while self._green_loop_active:
+            # Inject new post-mortem summaries if any
+            if len(self.past_failure_summaries) > last_failure_count:
+                for pm in self.past_failure_summaries[last_failure_count:]:
+                    cb.add_context(
+                        Context(text=f"Post-Mortem Guidance:\n{pm}", context_type=ContextType.POST_MORTEM_SUMMARY)
+                    )
+                last_failure_count = len(self.past_failure_summaries)
+
+            await self.llm_client.chat(contexts=[], tools=tools, registry=self.registry)
+
+            if self._phase_successful:
+                self._green_loop_active = False
                 break
 
             if self.tracker.should_abort():
