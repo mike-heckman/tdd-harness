@@ -235,7 +235,7 @@ class TDDLoopController:
 
         report_dir = self.harness_ctx.reports_dir
         report_dir.mkdir(parents=True, exist_ok=True)
-        report_file = report_dir / f"success_report_{self.session_id}.md"
+        report_file = report_dir / f"success_report_{self.current_phase.name.lower()}_{self.session_id}.md"
         with open(report_file, "w") as f:
             f.write(f"Status: Success\\nMessage: {message}\\n")
 
@@ -256,7 +256,7 @@ class TDDLoopController:
         """
         report_dir = self.harness_ctx.reports_dir
         report_dir.mkdir(parents=True, exist_ok=True)
-        report_file = report_dir / f"abort_report_{self.session_id}.md"
+        report_file = report_dir / f"abort_report_{self.current_phase.name.lower()}_{self.session_id}.md"
         with open(report_file, "w") as f:
             f.write(f"Abort Reason: {reason}\\n")
         sys.exit(1)
@@ -887,17 +887,64 @@ class TDDLoopController:
         for file_path, missing_lines in missing_coverage.items():
             attempts = 0
             while attempts < max_attempts:
-                # Dispatch to a hypothetical 'fix_coverage' tool or LLM action
-                # Here we pass the specific missing line numbers for the LLM context.
-                context = {"file_path": file_path, "missing_lines": missing_lines}
+                total_lines = sum(len(stats.get("lines", {})) for stats in parser.file_stats.values())
+                covered_lines = sum(
+                    sum(1 for hits in stats.get("lines", {}).values() if hits > 0)
+                    for stats in parser.file_stats.values()
+                )
+                total_missing = sum(len(m) for m in missing_coverage.values())
+
+                current_coverage = (covered_lines / total_lines * 100) if total_lines > 0 else 100.0
 
                 try:
-                    # In a real implementation this sends the context to the LLM agent
-                    # await self.execute_tool("fix_coverage", context)
-                    _ = context
+                    self.check_magenta_exit(current_coverage, total_missing)
+                    break
+                except PhaseValidationError:
                     pass
-                except Exception:
-                    pass
+
+                cb = ContextBuilder()
+                cb.clear()
+
+                try:
+                    phase_prompt = Prompt("magenta_phase_prompt").get_system_message()
+                    cb.add_context(phase_prompt)
+                except FileNotFoundError:
+                    logger.warning("No prompt found for magenta phase.")
+
+                context_text = f"File: {file_path} is missing test coverage for lines: {missing_lines}. Please write additional tests to cover these lines."
+                cb.add_context(Context(text=context_text, context_type=ContextType.TASK_CONTEXT))
+
+                source = self.read_file_safe(file_path)
+                cb.add_context(
+                    Context(text=f"File: {file_path}\n```python\n{source}\n```", context_type=ContextType.FILE_SOURCE)
+                )
+
+                tools = get_tools_for_phase(self.current_phase.value)
+
+                self.tracker.reset()
+                self.past_failure_summaries.clear()
+                self._phase_successful = False
+
+                self._magenta_loop_active = True
+                last_failure_count = 0
+                while self._magenta_loop_active:
+                    if len(self.past_failure_summaries) > last_failure_count:
+                        for pm in self.past_failure_summaries[last_failure_count:]:
+                            cb.add_context(
+                                Context(
+                                    text=f"Post-Mortem Guidance:\n{pm}", context_type=ContextType.POST_MORTEM_SUMMARY
+                                )
+                            )
+                        last_failure_count = len(self.past_failure_summaries)
+
+                    await self.llm_client.chat(contexts=[], tools=tools, registry=self.registry)
+
+                    if self._phase_successful:
+                        self._magenta_loop_active = False
+                        break
+
+                    if self.tracker.should_abort():
+                        self.abort("Anti-thrashing limits exceeded.")
 
                 # After LLM action, re-run global coverage to verify
                 orchestrate_global(self.config, Path.cwd())
@@ -905,6 +952,7 @@ class TDDLoopController:
                 parser = LcovParser(Path.cwd())
                 parser.parse_file(coverage_file)
                 new_missing = parser.get_missing_coverage()
+                missing_coverage = new_missing
 
                 if file_path not in new_missing or not new_missing[file_path]:
                     break  # Coverage fixed for this file
@@ -914,5 +962,11 @@ class TDDLoopController:
                 attempts += 1
 
             if attempts >= max_attempts:
-                # TODO: dynamic handling
+                report_dir = self.harness_ctx.reports_dir
+                report_dir.mkdir(parents=True, exist_ok=True)
+                report_file = report_dir / f"abort_report_{self.current_phase.name.lower()}_{self.session_id}.md"
+                with open(report_file, "w") as f:
+                    f.write(
+                        f"Abort Reason: LLM failed to increase coverage for {file_path} after {max_attempts} attempts.\\n"
+                    )
                 self.abort(f"LLM failed to increase coverage for {file_path} after {max_attempts} attempts.")

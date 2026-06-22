@@ -466,3 +466,218 @@ async def test_execute_tool_success_record(controller):
         res = await controller.execute_tool("my_tool", {"arg": "val"})
         assert res == "OK"
         mock_record.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.controller.orchestrate_global")
+async def test_run_magenta_loop_success(mock_orchestrate, controller):
+    with patch("src.tdd_harness.controller.Path.exists", return_value=True):
+        with patch("src.tdd_harness.controller.LcovParser") as mock_parser_cls:
+            mock_parser = MagicMock()
+            mock_parser_cls.return_value = mock_parser
+            # First it has missing coverage, then empty
+            mock_parser.get_missing_coverage.side_effect = [{"src/dummy.py": [10, 11]}, {}]
+            mock_parser.file_stats = {"src/dummy.py": {"lines": {10: 0, 11: 0}}}
+
+            async def mock_chat(*args, **kwargs):
+                controller._phase_successful = True
+
+            with patch.object(controller.llm_client, "chat", new=mock_chat):
+                with patch.object(controller, "read_file_safe", return_value="print('dummy')"):
+                    with patch.object(controller, "check_magenta_exit", side_effect=PhaseValidationError("Failed")):
+                        await controller.run_magenta_loop()
+
+    assert controller.current_phase == Phase.MAGENTA
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.controller.orchestrate_global")
+async def test_run_magenta_loop_abort(mock_orchestrate, controller):
+    with patch("src.tdd_harness.controller.Path.exists", return_value=True):
+        with patch("src.tdd_harness.controller.LcovParser") as mock_parser_cls:
+            mock_parser = MagicMock()
+            mock_parser_cls.return_value = mock_parser
+            # Always missing coverage
+            mock_parser.get_missing_coverage.return_value = {"src/dummy.py": [10, 11]}
+            mock_parser.file_stats = {"src/dummy.py": {"lines": {10: 0, 11: 0}}}
+
+            async def mock_chat(*args, **kwargs):
+                controller._phase_successful = True
+
+            with patch.object(controller.llm_client, "chat", new=mock_chat):
+                with patch.object(controller, "read_file_safe", return_value="print('dummy')"):
+                    with patch.object(controller, "check_magenta_exit", side_effect=PhaseValidationError("Failed")):
+                        with pytest.raises(SystemExit):
+                            await controller.run_magenta_loop()
+
+
+def test_is_path_allowed_outside_workspace(controller, tmp_path):
+    # Path outside workspace
+    outside = tmp_path.parent / "outside.txt"
+    assert not controller._is_path_allowed(str(outside), is_write=False)
+
+
+def test_is_path_allowed_empty_parts(controller, tmp_path):
+    # Path is same as cwd
+    from pathlib import Path
+
+    cwd = Path.cwd().resolve()
+    assert controller._is_path_allowed(str(cwd), is_write=False)
+
+
+def test_is_path_allowed_phase_specific(controller):
+    # RED phase: src is ro, test is rw
+    controller.current_phase = Phase.RED
+    assert not controller._is_path_allowed("src/app.py", is_write=True)
+
+    # GREEN phase: src is rw, test is ro
+    controller.current_phase = Phase.GREEN
+    assert not controller._is_path_allowed("tests/test_app.py", is_write=True)
+
+
+def test_read_file_safe_denied(controller):
+    controller.current_phase = Phase.RED
+    with pytest.raises(Exception, match="Read access"):
+        # Let's mock _is_path_allowed to return False
+        with patch.object(controller, "_is_path_allowed", return_value=False):
+            controller.read_file_safe("some_file.py")
+
+
+def test_read_file_safe_success(controller, tmp_path):
+    f = tmp_path / "test.txt"
+    f.write_text("hello")
+    with patch.object(controller, "_is_path_allowed", return_value=True):
+        assert controller.read_file_safe(str(f)) == "hello"
+
+
+def test_write_file_safe_denied(controller):
+    with pytest.raises(Exception, match="Write access"):
+        with patch.object(controller, "_is_path_allowed", return_value=False):
+            controller.write_file_safe("some_file.py", "content")
+
+
+def test_write_file_safe_success(controller, tmp_path):
+    f = tmp_path / "test.txt"
+    with patch.object(controller, "_is_path_allowed", return_value=True):
+        res = controller.write_file_safe(str(f), "hello")
+        assert "Successfully wrote to" in res
+        assert f.read_text() == "hello"
+
+
+def test_abort(controller):
+    with pytest.raises(SystemExit):
+        controller.abort("testing abort")
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.controller.run_lint")
+async def test_success_lint_failure(mock_lint, controller):
+    mock_lint.return_value = {"status": "failed", "stderr": "Bad lint"}
+    res = await controller.success("msg")
+    assert "Linting errors" in res
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.controller.run_lint")
+@patch.object(TDDLoopController, "check_red_exit", side_effect=PhaseValidationError("Red failed"))
+async def test_success_validation_failure(mock_red_exit, mock_lint, controller):
+    controller.current_phase = Phase.RED
+    mock_lint.return_value = {"status": "success"}
+    res = await controller.success("msg")
+    assert "Validation failed: Red failed" in res
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.controller.run_lint")
+@patch.object(TDDLoopController, "check_green_exit")
+async def test_success_with_diffs(mock_check_green, mock_lint, controller, tmp_path):
+    from unittest.mock import PropertyMock
+
+    controller.current_phase = Phase.GREEN
+    mock_lint.return_value = {"status": "success"}
+    controller.review_agent.review = AsyncMock(return_value="APPROVE")
+
+    backup_dir = tmp_path / "backup"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    with patch(
+        "src.tdd_harness.controller.HarnessContext.backup_dir", new_callable=PropertyMock, return_value=backup_dir
+    ):
+        f1 = tmp_path / "f1.py"
+        f1.write_text("new")
+        (backup_dir / "f1.py.bak").write_text("old")
+
+        f2 = tmp_path / "f2.py"
+        f2.write_text("new_only")
+
+        controller.session_modified_files.update([str(f1), str(f2)])
+
+        res = await controller.success("msg")
+        assert res == "Phase completed successfully."
+        args, _ = controller.review_agent.review.call_args
+        unified_diff = args[2]
+        assert "-old" in unified_diff or "new_only" in unified_diff
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.controller.run_lint")
+@patch("src.tdd_harness.controller.orchestrate_targeted")
+@patch("src.tdd_harness.controller.TDDLoopController._generate_post_mortem")
+@patch("src.tdd_harness.controller.TDDLoopController._is_path_allowed", return_value=True)
+async def test_stage_test_implementation_wrong_error(
+    mock_is_path_allowed, mock_post_mortem, mock_orch, mock_lint, controller, tmp_path
+):
+    controller.current_phase = Phase.RED
+    test_file = tmp_path / "test_file.py"
+    test_file.write_text("def test_fail(): pass")
+
+    mock_lint.return_value = {"status": "success"}
+    mock_orch.return_value = {"pytest": {"status": "failed", "stderr": "SyntaxError: oops"}}
+    mock_post_mortem.return_value = "Syntax error instead of assertion"
+
+    result = await controller.stage_test_implementation(str(test_file), "def test_fail(): pass", "test_fail", "concept")
+    assert "Test did not fail with AssertionError" in result
+
+
+@pytest.mark.asyncio
+async def test_ask_researcher(controller):
+    controller.research_agent.ask = AsyncMock(return_value="Researched")
+    res = await controller.ask_researcher("q")
+    assert res == "Researched"
+
+
+def test_search_web_no_module(controller):
+    import sys
+
+    with patch.dict(sys.modules, {"duckduckgo_search": None}):
+        res = controller.search_web("query")
+        assert "duckduckgo-search not installed" in res
+
+
+def test_download_to_reference_no_module(controller):
+    import sys
+
+    with patch.dict(sys.modules, {"requests": None}):
+        res = controller.download_to_reference("url", "lib", "file")
+        assert "Missing requests" in res
+
+
+@pytest.mark.asyncio
+async def test_generate_post_mortem(controller):
+    controller.post_mortem_agent.generate = AsyncMock(return_value="PM")
+    with patch.object(controller, "read_file_safe", return_value="code"):
+        res = await controller._generate_post_mortem("file.py", "err")
+        assert res == "PM"
+
+
+@pytest.mark.asyncio
+async def test_stage_implementation_wrong_phase(controller):
+    controller.current_phase = Phase.RED
+    res = await controller.stage_implementation("f.py", "c")
+    assert "can only be used in the Blue or Green" in res
+
+
+@pytest.mark.asyncio
+async def test_stage_test_implementation_wrong_phase(controller):
+    controller.current_phase = Phase.GREEN
+    res = await controller.stage_test_implementation("f.py", "c", "t", "c")
+    assert "can only be used in the Red" in res
