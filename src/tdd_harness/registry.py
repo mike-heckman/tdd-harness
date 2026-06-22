@@ -169,15 +169,30 @@ class ToolRegistry:
         tool_name = name or func.__name__
         tool_desc = description or func.__doc__ or ""
 
-        # Very basic schema generation for testing
         sig = inspect.signature(func)
         properties = {}
         required = []
-        for param_name, _param in sig.parameters.items():
+        for param_name, param in sig.parameters.items():
             if param_name in ("self", "previous_failures", "config"):
                 continue
-            properties[param_name] = {"type": "string"}  # Defaulting to string for test simplicity
-            required.append(param_name)
+
+            param_type = "string"
+            if param.annotation is not inspect.Parameter.empty:
+                ann = param.annotation
+                if ann is int:
+                    param_type = "integer"
+                elif ann is float:
+                    param_type = "number"
+                elif ann is bool:
+                    param_type = "boolean"
+                elif ann is list or getattr(ann, "__origin__", None) is list:
+                    param_type = "array"
+                elif ann is str:
+                    param_type = "string"
+
+            properties[param_name] = {"type": param_type}
+            if param.default is inspect.Parameter.empty:
+                required.append(param_name)
 
         schema = {"type": "object", "properties": properties, "required": required}
 
