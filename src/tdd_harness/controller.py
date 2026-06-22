@@ -3,7 +3,6 @@ TDD Loop Controller Module.
 """
 
 import difflib
-import json
 import shutil
 import sys
 import uuid
@@ -12,12 +11,14 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from openai import AsyncOpenAI
 
 from .config import TddHarnessConfig
 from .coverage_parser import LcovParser
+from .llm import LLMClient
+from .prompt import Prompt
 from .registry import ToolRegistry
 from .runner import orchestrate_global, orchestrate_targeted, run_coverage, run_lint, run_test
+from .sub_agents import PostMortemSubAgent, ResearchSubAgent, ReviewSubAgent
 
 
 class Phase(Enum):
@@ -65,6 +66,18 @@ class TDDLoopController:
 
         self.past_failure_summaries: list[str] = []
         self.session_modified_files: set[str] = set()
+
+        class _ConfigLoaderWrapper:
+            def __init__(self, cfg: TddHarnessConfig) -> None:
+                self.cfg = cfg
+
+            def get_config(self) -> TddHarnessConfig:
+                return self.cfg
+
+        self.llm_client = LLMClient(_ConfigLoaderWrapper(self.config), Prompt("system_message"))
+        self.review_agent = ReviewSubAgent(self.llm_client)
+        self.post_mortem_agent = PostMortemSubAgent(self.llm_client)
+        self.research_agent = ResearchSubAgent(self.llm_client)
 
         # Register built-in file operations wrapped with security interceptors
         self.registry.register_python_tool(self.read_file_safe, name="read_file")
@@ -192,61 +205,9 @@ class TDDLoopController:
                             task_content = f.read()
                         break
 
-        review_prompt = (
-            "You are a Senior Code Reviewer Sub-Agent. Your task is to review the unified diff of the changes made by the primary agent "
-            "against the original Task File (Definition of Done) and ensure all requirements are met.\n"
-            "You have read-only access to 'get_file_content' and 'get_symbol_source' tools to investigate the full files if the diff lacks context.\n"
-            "You MUST return a structured response: either 'APPROVE' if the changes meet all criteria, or 'REJECT: <specific critique>' if there are missing requirements or issues.\n"
-            "Do NOT output anything else except this structured response."
+        reviewer_response = await self.review_agent.review(
+            task_content, modified_files_list, unified_diff, self.registry
         )
-
-        user_content = (
-            f"Task File:\n{task_content}\n\nModified Files:\n{modified_files_list}\n\nUnified Diff:\n{unified_diff}"
-        )
-
-        api_key = str(self.config.llm.get("api_key", "")) if self.config.llm.get("api_key") else None
-        base_url = str(self.config.llm.get("base_url", "")) if self.config.llm.get("base_url") else None
-        model = str(self.config.llm.get("model", "gpt-4o"))
-        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-
-        messages = [{"role": "system", "content": review_prompt}, {"role": "user", "content": user_content}]
-
-        # Provide get_file_content and get_symbol_source tools
-        tools = []
-        for schema in self.registry.get_openai_schemas():
-            name = schema["function"]["name"]
-            if name in ("get_file_content", "get_symbol_source"):
-                tools.append(schema)
-
-        max_loops = 5
-        reviewer_response = "APPROVE"
-        for _ in range(max_loops):
-            kwargs = {
-                "model": model,
-                "messages": messages,
-            }
-            if tools:
-                kwargs["tools"] = tools
-
-            # type ignored below as client.chat.completions.create is typed dynamically
-            response = await client.chat.completions.create(**kwargs)  # type: ignore
-
-            msg = response.choices[0].message
-            if getattr(msg, "tool_calls", None):
-                messages.append(msg)
-                for tool_call in msg.tool_calls:  # type: ignore
-                    func = tool_call.function
-                    name = str(func.name)
-                    args = json.loads(func.arguments)
-                    try:
-                        res = await self.registry.dispatch(name, args)
-                        content = str(res.content) if res.success else f"Error: {res.error}"
-                    except Exception as e:
-                        content = f"Error executing tool: {e}"
-                    messages.append({"role": "tool", "tool_call_id": tool_call.id, "name": name, "content": content})
-            else:
-                reviewer_response = msg.content.strip() if msg.content else "APPROVE"
-                break
 
         if reviewer_response.startswith("REJECT"):
             return f"Validation failed: Review Sub-Agent Rejected the implementation.\\nCritique: {reviewer_response}"
@@ -283,24 +244,7 @@ class TDDLoopController:
         Generates a post-mortem summary for a failure using a secondary LLM call.
         """
         code = self.read_file_safe(filepath)
-        prompt = f"""Analyze the following test/linter failure for {filepath}.
-Code:
-{code}
-
-Traceback:
-{raw_error}
-
-Return a 2-3 sentence technical summary of the root cause AND a specific, actionable suggestion for what the primary agent should do differently to fix it. Do not include any other text."""
-
-        api_key = str(self.config.llm.get("api_key", "")) if self.config.llm.get("api_key") else None
-        base_url = str(self.config.llm.get("base_url", "")) if self.config.llm.get("base_url") else None
-        model = str(self.config.llm.get("model", "gpt-4o"))
-        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        try:
-            response = await client.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}])
-            return response.choices[0].message.content or "Failed to generate post-mortem."
-        except Exception as e:
-            return f"Failed to generate post-mortem: {e}"
+        return await self.post_mortem_agent.generate(filepath, code, raw_error)
 
     async def stage_implementation(self, filepath: str, code: str) -> str:
         """
@@ -431,57 +375,7 @@ Return a 2-3 sentence technical summary of the root cause AND a specific, action
 
         Returns a concise 3-4 sentence technical summary.
         """
-        api_key = str(self.config.llm.get("api_key", "")) if self.config.llm.get("api_key") else None
-        base_url = str(self.config.llm.get("base_url", "")) if self.config.llm.get("base_url") else None
-        model = str(self.config.llm.get("model", "gpt-4o"))
-        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-
-        system_prompt = (
-            "You are a Research Sub-Agent. Your task is to investigate the user's query "
-            "using the provided tools (jdocmunch, jcodemunch, etc). "
-            "Once you have gathered the necessary information, provide a concise, 3-4 sentence technical summary of your findings. "
-            "Do NOT include any extra conversational filler."
-        )
-
-        messages: list[Any] = [{"role": "system", "content": system_prompt}, {"role": "user", "content": query}]
-
-        tools: list[Any] = []
-        for schema in self.registry.get_openai_schemas():
-            tool_name = schema["function"]["name"]
-            if self.registry.tools[tool_name].type.value == "mcp" or tool_name in [
-                "search_web",
-                "download_to_reference",
-            ]:
-                tools.append(schema)
-
-        max_loops = 10
-        for _ in range(max_loops):
-            kwargs: dict[str, Any] = {
-                "model": model,
-                "messages": messages,
-            }
-            if tools:
-                kwargs["tools"] = tools
-
-            response = await client.chat.completions.create(**kwargs)  # type: ignore
-
-            msg = response.choices[0].message
-            if getattr(msg, "tool_calls", None):
-                messages.append(msg)
-                for tool_call in msg.tool_calls:  # type: ignore
-                    func = tool_call.function
-                    name = str(func.name)
-                    args = json.loads(func.arguments)
-                    try:
-                        res = await self.registry.dispatch(name, args)
-                        content = str(res.content) if res.success else f"Error: {res.error}"
-                    except Exception as e:
-                        content = f"Error executing tool: {e}"
-                    messages.append({"role": "tool", "tool_call_id": tool_call.id, "name": name, "content": content})
-            else:
-                return msg.content or "No findings could be summarized."
-
-        return "Research loop maxed out without a final summary."
+        return await self.research_agent.ask(query, self.registry)
 
     def pre_flight_validation(self) -> bool:
         """
