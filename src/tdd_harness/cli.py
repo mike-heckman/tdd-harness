@@ -32,11 +32,13 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         help="Command to run (e.g. init)",
         default=None,
     )
+
     parser.add_argument(
         "--project-dir",
         help="Project directory to use for configuration",
         default=None,
     )
+
     parser.add_argument(
         "--phase",
         choices=["green", "blue"],

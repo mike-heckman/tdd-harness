@@ -37,26 +37,47 @@ class PromptConfig(BaseModel):
     prompt: str
 
 
+CACHE_TDD_DIRECTORIES: list[Path] = []
+
+
+def build_cache_tdd_directories(project_dir: str | Path | None = None, force: bool = False) -> list[Path]:
+    """
+    Build a cached list of .tdd-harness directories to search for configuration files.
+    """
+    global CACHE_TDD_DIRECTORIES
+
+    if CACHE_TDD_DIRECTORIES:
+        if force:
+            CACHE_TDD_DIRECTORIES.clear()
+        else:
+            return CACHE_TDD_DIRECTORIES
+
+    if project_dir:
+        config_dir = Path(project_dir) / ".tdd-harness"
+        if config_dir.exists():
+            CACHE_TDD_DIRECTORIES.append(config_dir)
+
+    # Fallback to current working directory
+    cwd_config = Path.cwd() / ".tdd-harness"
+    if cwd_config.exists() and cwd_config not in CACHE_TDD_DIRECTORIES:
+        CACHE_TDD_DIRECTORIES.append(cwd_config)
+
+    # Fallback to user home directory
+    home_config = Path.home() / ".tdd-harness"
+    if home_config.exists() and home_config not in CACHE_TDD_DIRECTORIES:
+        CACHE_TDD_DIRECTORIES.append(home_config)
+
+    if CACHE_TDD_DIRECTORIES:
+        return CACHE_TDD_DIRECTORIES
+
+    raise FileNotFoundError("No .tdd-harness directory found in any fallback location.")
+
+
 def resolve_config_directory(project_dir: str | None = None) -> Path:
     """
     Resolve the path to the .tdd-harness directory with fallbacks.
     """
-    if project_dir:
-        config_dir = Path(project_dir) / ".tdd-harness"
-        if config_dir.exists():
-            return config_dir
-
-    # Fallback to current working directory
-    cwd_config = Path.cwd() / ".tdd-harness"
-    if cwd_config.exists():
-        return cwd_config
-
-    # Fallback to user home directory
-    home_config = Path.home() / ".tdd-harness"
-    if home_config.exists():
-        return home_config
-
-    raise FileNotFoundError("No .tdd-harness directory found in any fallback location.")
+    return build_cache_tdd_directories(project_dir)[0]
 
 
 def load_tdd_harness_config(config_dir: Path) -> TddHarnessConfig:
@@ -86,13 +107,19 @@ def load_tdd_harness_config(config_dir: Path) -> TddHarnessConfig:
     return TddHarnessConfig(**config_data)
 
 
-def load_prompt_config(config_dir: Path, prompt_name: str) -> PromptConfig:
+def load_prompt_config(prompt_name: str, project_dir: str | Path | None = None) -> PromptConfig:
     """
-    Load a specific prompt configuration.
+    Load a specific prompt configuration by checking resolution fallbacks.
     """
-    prompt_file = config_dir / "prompts" / f"{prompt_name}.yaml"
-    if not prompt_file.exists():
-        raise FileNotFoundError(f"Prompt file {prompt_file} not found.")
+    prompt_file = None
+    for config_dir in build_cache_tdd_directories(project_dir):
+        candidate = config_dir / "prompts" / f"{prompt_name}.yaml"
+        if candidate.exists():
+            prompt_file = candidate
+            break
+
+    if not prompt_file:
+        raise FileNotFoundError(f"Prompt file {prompt_name}.yaml not found in any fallback location.")
 
     with open(prompt_file) as f:
         prompt_data = yaml.safe_load(f)
