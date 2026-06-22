@@ -79,12 +79,10 @@ def test_is_path_allowed_phase_constraints(controller):
 
 @patch("src.tdd_harness.controller.TDDLoopController._process_ready_tasks")
 @patch("src.tdd_harness.controller.run_lint")
-@patch("src.tdd_harness.controller.run_test")
-@patch("src.tdd_harness.controller.run_coverage")
-def test_pre_flight_validation(mock_cov, mock_test, mock_lint, mock_tasks, controller):
+@patch("src.tdd_harness.controller.run_test_and_coverage")
+def test_pre_flight_validation(mock_test_cov, mock_lint, mock_tasks, controller):
     mock_lint.return_value = {"status": "success"}
-    mock_test.return_value = {"pytest": {"status": "success"}}
-    mock_cov.return_value = {"lcov": {"status": "success"}}
+    mock_test_cov.return_value = {"test_python_pytest": {"status": "success"}, "cov_python_lcov": {"status": "success"}}
     mock_tasks.return_value = True
 
     assert controller.pre_flight_validation() is True
@@ -695,6 +693,10 @@ async def test_generate_post_mortem(controller):
     with patch.object(controller, "read_file_safe", return_value="code"):
         res = await controller._generate_post_mortem("file.py", "err")
         assert res == "PM"
+        # Second call should use cache
+        res2 = await controller._generate_post_mortem("file.py", "err")
+        assert res2 == "PM"
+        assert controller.post_mortem_agent.generate.call_count == 1
 
 
 @pytest.mark.asyncio

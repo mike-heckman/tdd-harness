@@ -3,6 +3,7 @@ Anti-thrashing tracker for tdd-harness.
 """
 
 import hashlib
+import json
 from collections import Counter, deque
 
 from src.tdd_harness.models.tool import ToolCall, ToolCallResponse
@@ -48,9 +49,8 @@ class AntiThrashingTracker:
             response: The result of the tool call
         """
         # Create a hash of the tool call for tracking
-        # Convert dict to sorted tuple of items for hashing
-        arg_tuple = tuple(sorted(tool_call.arguments.items()))
-        call_hash = hashlib.sha256(f"{tool_call.tool_name}:{hash(arg_tuple)}".encode()).hexdigest()
+        arg_str = json.dumps(tool_call.arguments, sort_keys=True)
+        call_hash = hashlib.sha256(f"{tool_call.tool_name}:{arg_str}".encode()).hexdigest()
 
         # Record the call
         self.tool_call_hashes.append((call_hash, response.success))

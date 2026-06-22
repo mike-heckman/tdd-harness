@@ -5,6 +5,7 @@ Command-line interface for tdd-harness.
 import argparse
 import asyncio
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -122,8 +123,6 @@ def main():
         sys.exit(1)
 
     # Check git status
-    import subprocess
-
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain"], cwd=Path.cwd(), capture_output=True, text=True, check=True

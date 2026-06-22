@@ -68,7 +68,21 @@ async def test_llm_client_baseline_extraction(mock_config, mock_prompt, mock_con
 
 
 @pytest.mark.asyncio
-@patch("src.tdd_harness.config.load_prompt_config")
+async def test_llm_client_context_exhausted(mock_config, mock_prompt, mock_config_loader):
+    """Tests that Context Exhausted RuntimeError is raised when system + incoming exceeds limits."""
+    messages = [Context(text="huge", context_type=ContextType.TASK_CONTEXT, token_count=7500)]
+
+    with patch("src.tdd_harness.llm.AsyncOpenAI", autospec=True) as mock_openai_class:
+        mock_client = mock_openai_class.return_value
+        client = LLMClient(mock_config_loader, mock_prompt)
+        client.client = mock_client
+
+        with pytest.raises(RuntimeError, match="Context Exhausted"):
+            await client.chat(messages)
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.llm.load_prompt_config")
 async def test_llm_client_context_compression_trigger(
     mock_load_prompt_config, mock_config, mock_prompt, mock_config_loader
 ):
@@ -77,7 +91,12 @@ async def test_llm_client_context_compression_trigger(
     mock_comp_config.prompt = "Compress this."
     mock_load_prompt_config.return_value = mock_comp_config
 
-    messages = [Context(text="a" * 30000, context_type=ContextType.TASK_CONTEXT, token_count=7000)]
+    from src.tdd_harness.context import ContextBuilder
+
+    cb = ContextBuilder()
+    cb.clear()
+    cb.add_context(Context(text="a" * 30000, context_type=ContextType.CHAT_HISTORY, token_count=7000))
+    messages = [Context(text="small", context_type=ContextType.TASK_CONTEXT, token_count=10)]
 
     with patch("src.tdd_harness.llm.AsyncOpenAI", autospec=True) as mock_openai_class:
         mock_client = mock_openai_class.return_value
@@ -107,7 +126,7 @@ async def test_llm_client_context_compression_trigger(
 
 
 @pytest.mark.asyncio
-@patch("src.tdd_harness.config.load_prompt_config")
+@patch("src.tdd_harness.llm.load_prompt_config")
 async def test_llm_client_compression_rebuilds_history(
     mock_load_prompt_config, mock_config, mock_prompt, mock_config_loader
 ):
@@ -116,7 +135,7 @@ async def test_llm_client_compression_rebuilds_history(
     mock_comp_config.prompt = "Compress this."
     mock_load_prompt_config.return_value = mock_comp_config
 
-    messages = [Context(text="a" * 30000, context_type=ContextType.TASK_CONTEXT, token_count=7000)]
+    messages = [Context(text="small task", context_type=ContextType.TASK_CONTEXT, token_count=10)]
 
     with patch("src.tdd_harness.llm.AsyncOpenAI", autospec=True) as mock_openai_class:
         mock_client = mock_openai_class.return_value
@@ -130,7 +149,9 @@ async def test_llm_client_compression_rebuilds_history(
 
         cb = ContextBuilder()
         cb.clear()
-        cb.add_context(Context(text="old history", context_type=ContextType.TASK_CONTEXT))
+        cb.add_context(
+            Context(text="old history " + ("a" * 30000), context_type=ContextType.CHAT_HISTORY, token_count=7000)
+        )
 
         comp_response = MagicMock()
         comp_response.choices[0].message.content = "Summarized content"
