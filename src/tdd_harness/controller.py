@@ -3,6 +3,7 @@ TDD Loop Controller Module.
 """
 
 import difflib
+import logging
 import shutil
 import sys
 import uuid
@@ -13,6 +14,7 @@ from typing import Any
 import yaml
 
 from .config import TddHarnessConfig
+from .context import Context, ContextBuilder, ContextType
 from .coverage_parser import LcovParser
 from .llm import LLMClient
 from .models.tool import ToolCall, ToolCallResponse
@@ -20,7 +22,10 @@ from .prompt import Prompt
 from .registry import ToolRegistry
 from .runner import orchestrate_global, orchestrate_targeted, run_coverage, run_lint, run_test
 from .sub_agents import PostMortemSubAgent, ResearchSubAgent, ReviewSubAgent
+from .tool_schemas import get_tools_for_phase
 from .tracker import AntiThrashingTracker
+
+logger = logging.getLogger(__name__)
 
 
 class Phase(Enum):
@@ -54,6 +59,11 @@ class PhaseValidationError(Exception):
 class TDDLoopController:
     """
     Manages the TDD Loop, State Transitions, and File Security.
+
+    Design Pattern: Orchestrator / State Machine
+    Responsibility: Coordinates state transitions between TDD phases and delegates
+    execution to dedicated runner adapters and sub-agents, adhering to the Single
+    Responsibility Principle.
     """
 
     def __init__(self, config: TddHarnessConfig, registry: ToolRegistry):
@@ -658,16 +668,15 @@ class TDDLoopController:
 
         success_criteria = frontmatter.get("success_criteria", [])
 
-        from src.tdd_harness.context import Context, ContextBuilder, ContextType
-
         cb = ContextBuilder()
         cb.clear()
 
         # Add phase instructions
-        phase_doc_path = Path("docs/phases/02-blue-structural-blueprint.md")
-        if phase_doc_path.exists():
-            phase_doc = phase_doc_path.read_text(encoding="utf-8")
-            cb.add_context(Context(text=phase_doc, context_type=ContextType.SYSTEM))
+        try:
+            phase_prompt = Prompt("blue_phase_prompt").get_system_message()
+            cb.add_context(phase_prompt)
+        except FileNotFoundError:
+            logger.warning("No prompt found for blue phase.")
 
         cb.add_context(Context(text=context_text, context_type=ContextType.TASK_CONTEXT))
         for criteria in success_criteria:
@@ -682,80 +691,7 @@ class TDDLoopController:
                     Context(text=f"File: {file}\n```python\n{source}\n```", context_type=ContextType.FILE_SOURCE)
                 )
 
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "search_symbols",
-                    "description": "Search for symbols across the project.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"query": {"type": "string"}},
-                        "required": ["query"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_symbol_source",
-                    "description": "Get the source code of a specific symbol.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"symbol": {"type": "string"}},
-                        "required": ["symbol"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "ask_researcher",
-                    "description": "Ask the Research Sub-Agent a question.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"query": {"type": "string"}},
-                        "required": ["query"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "stage_implementation",
-                    "description": "Stage an implementation for the Blue phase.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"filepath": {"type": "string"}, "code": {"type": "string"}},
-                        "required": ["filepath", "code"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "success",
-                    "description": "Signal that the phase is successfully completed.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"message": {"type": "string"}},
-                        "required": ["message"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "abort",
-                    "description": "Abort the phase execution.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"reason": {"type": "string"}},
-                        "required": ["reason"],
-                    },
-                },
-            },
-        ]
+        tools = get_tools_for_phase(self.current_phase.value)
 
         self.tracker.reset()
 
@@ -766,6 +702,74 @@ class TDDLoopController:
 
             if self._phase_successful:
                 self._blue_loop_active = False
+                break
+
+            if self.tracker.should_abort():
+                self.abort("Anti-thrashing limits exceeded.")
+
+    async def run_red_phase(self, task_file: Path) -> None:
+        """
+        Orchestrates the Red (Test Generation) phase end-to-end.
+        """
+        self.current_phase = Phase.RED
+        self._phase_successful = False
+
+        # Assemble Context
+        task_content = task_file.read_text(encoding="utf-8")
+        if "---" in task_content:
+            parts = task_content.split("---", 2)
+            frontmatter = yaml.safe_load(parts[1])
+            context_text = parts[2].strip()
+        else:
+            frontmatter = {}
+            context_text = task_content
+
+        success_criteria = frontmatter.get("success_criteria", [])
+
+        cb = ContextBuilder()
+        cb.clear()
+
+        # Add phase instructions
+        try:
+            phase_prompt = Prompt("red_phase_prompt").get_system_message()
+            cb.add_context(phase_prompt)
+        except FileNotFoundError:
+            logger.warning("No prompt found for red phase.")
+
+        cb.add_context(Context(text=context_text, context_type=ContextType.TASK_CONTEXT))
+        for criteria in success_criteria:
+            cb.add_context(Context(text=f"Criteria: {criteria}", context_type=ContextType.TASK_CRITERIA))
+
+        target_files = frontmatter.get("target_files", [])
+        for file in target_files:
+            file_path = Path(file)
+            if file_path.exists():
+                source = self.read_file_safe(str(file_path))
+                cb.add_context(
+                    Context(text=f"File: {file}\n```python\n{source}\n```", context_type=ContextType.FILE_SOURCE)
+                )
+
+        tools = get_tools_for_phase(self.current_phase.value)
+
+        self.tracker.reset()
+        self.past_failure_summaries.clear()
+
+        # Tool-call loop
+        self._red_loop_active = True
+        last_failure_count = 0
+        while self._red_loop_active:
+            # Inject new post-mortem summaries if any
+            if len(self.past_failure_summaries) > last_failure_count:
+                for pm in self.past_failure_summaries[last_failure_count:]:
+                    cb.add_context(
+                        Context(text=f"Post-Mortem Guidance:\n{pm}", context_type=ContextType.POST_MORTEM_SUMMARY)
+                    )
+                last_failure_count = len(self.past_failure_summaries)
+
+            await self.llm_client.chat(contexts=[], tools=tools, registry=self.registry)
+
+            if self._phase_successful:
+                self._red_loop_active = False
                 break
 
             if self.tracker.should_abort():

@@ -1,0 +1,4 @@
+prompt: |
+  You are executing the Red Phase (Test Generation).
+  Write failing tests against the structural interfaces provided in the context. 
+  Tests must fail due to an assertion and must explicitly declare a conceptual docstring or description.
