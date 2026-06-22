@@ -123,6 +123,47 @@ def test_magenta_exit(controller):
         controller.check_magenta_exit(85.0, 10)
 
 
+def test_get_test_count(controller):
+    from unittest.mock import mock_open
+
+    log_data = '{"$report_type": "TestReport", "when": "call"}\n{"$report_type": "TestReport", "when": "setup"}\n'
+    with patch("src.tdd_harness.controller.Path.exists", return_value=True):
+        with patch("src.tdd_harness.controller.open", mock_open(read_data=log_data)):
+            assert controller._get_test_count() == 1
+
+
+@patch("src.tdd_harness.controller.TDDLoopController._get_test_count")
+@patch("src.tdd_harness.controller.TDDLoopController.check_green_exit")
+def test_blue_exit(mock_check_green, mock_get_test_count, controller):
+    mock_get_test_count.return_value = 5
+    with pytest.raises(PhaseValidationError, match="Test count decreased"):
+        controller.check_blue_exit(10)
+
+    mock_get_test_count.return_value = 10
+    controller.check_blue_exit(10)
+
+
+@pytest.mark.asyncio
+@patch("src.tdd_harness.controller.run_test")
+@patch("src.tdd_harness.controller.TDDLoopController._get_test_count", return_value=10)
+async def test_run_blue_phase(mock_get_count, mock_run_test, controller, tmp_path):
+    task_file = tmp_path / "task.md"
+    task_file.write_text(
+        "---\nsuccess_criteria:\n  - 'Do a thing'\ntarget_files:\n  - 'dummy.py'\n---\n## Context\nTest"
+    )
+
+    async def mock_chat(*args, **kwargs):
+        controller._phase_successful = True
+
+    with patch.object(controller.llm_client, "chat", new=mock_chat):
+        with patch.object(controller, "read_file_safe", return_value="print('dummy')"):
+            with patch("src.tdd_harness.controller.Path.exists", return_value=True):
+                await controller.run_blue_phase(task_file)
+
+    assert controller.current_phase == Phase.BLUE
+    assert controller._initial_blue_test_count == 10
+
+
 @pytest.mark.asyncio
 @patch("src.tdd_harness.controller.run_lint")
 @patch("src.tdd_harness.controller.orchestrate_targeted")
