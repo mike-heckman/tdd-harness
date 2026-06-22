@@ -38,7 +38,7 @@ class Context:
     token_count: int | None = None
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     creation_time: datetime = field(default_factory=lambda: datetime.now(UTC))
-    metadata: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     is_count_estimated: bool = True
     is_compressible: bool = True
 
@@ -54,6 +54,22 @@ class Context:
             self.is_compressible = False
         elif self.context_type == ContextType.POST_MORTEM_SUMMARY:
             self.is_compressible = True
+
+    def as_openai_message(self) -> dict[str, Any]:
+        """
+        Exports the Context object as an OpenAI-formatted message dictionary.
+
+        (Ref: https://platform.openai.com/docs/api-reference/chat/create)
+        This dynamically maps the ContextType to a role, and directly applies
+        any attached metadata (such as tool_calls, tool_call_id, or name) directly
+        to the resulting dictionary payload.
+        """
+        base_message = {"role": self.context_type.value, "content": self.text if self.text else None}
+
+        # Merge all metadata keys natively into the dict
+        base_message.update(self.metadata)
+
+        return base_message
 
 
 class ContextBuilder:
@@ -118,7 +134,7 @@ class ContextBuilder:
         return sum((c.token_count or 0) for c in self._stack if c.context_type in context_types)
 
     def get_context(
-        self, context_types: list[ContextType] | None = None, metadata_filters: dict[str, str] | None = None
+        self, context_types: list[ContextType] | None = None, metadata_filters: dict[str, Any] | None = None
     ) -> list[Context]:
         """
         Return raw Context objects, optionally filtering by type or metadata.
