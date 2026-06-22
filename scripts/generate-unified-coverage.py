@@ -183,6 +183,8 @@ def generate_lcov_coverage(coverage_dir: Path, project_root: Path) -> tuple[str,
     if not lcov_files:
         return report_summary(language, output, total_stmts, total_covered)
 
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
     from src.tdd_harness.coverage_parser import LcovParser
 
     parser = LcovParser(project_root)

@@ -4,14 +4,17 @@ Command-line interface for tdd-harness.
 
 import argparse
 import asyncio
+import shutil
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .config import load_tdd_harness_config, resolve_config_directory
-from .controller import Phase, TDDLoopController
+from .config import TddHarnessConfig, load_tdd_harness_config, resolve_config_directory
+from .controller import TDDLoopController
+from .llm import LLMClient
 from .mcp_client import MCPClient
+from .prompt import Prompt
 from .registry import ToolRegistry
 
 
@@ -138,10 +141,10 @@ def main():
     # Continue with the harness logic
     print("TDD Harness initialized successfully.")
 
-    asyncio.run(async_main(config_dir))
+    asyncio.run(async_main(config_dir, args.phase))
 
 
-async def async_main(config_dir: Path):
+async def async_main(config_dir: Path, phase: str | None = None):
     """
     Async execution phase for CLI.
     """
@@ -150,7 +153,16 @@ async def async_main(config_dir: Path):
     registry = ToolRegistry(mcp_client=mcp_client)
     await registry.initialize()
 
-    controller = TDDLoopController(config, registry)
+    class _ConfigLoaderWrapper:
+        def __init__(self, cfg: TddHarnessConfig) -> None:
+            self.cfg = cfg
+
+        def get_config(self) -> TddHarnessConfig:
+            return self.cfg
+
+    llm_client = LLMClient(_ConfigLoaderWrapper(config), Prompt("system_message"))
+
+    controller = TDDLoopController(config, registry, llm_client)
 
     print("Running Amber pre-flight validation...")
     if not controller.pre_flight_validation():
@@ -165,17 +177,37 @@ async def async_main(config_dir: Path):
     except ValueError:
         pass
 
-    print("Transitioning to Blue phase (Structural Blueprint)...")
-    controller.current_phase = Phase.BLUE
+    ready_dir = Path("docs/tasks/ready")
+    task_file = None
+    if ready_dir.exists():
+        tasks = sorted(ready_dir.glob("*.md"))
+        if tasks:
+            task_file = tasks[0]
 
-    print("Transitioning to Red phase (Test Generation)...")
-    controller.current_phase = Phase.RED
+    if not task_file:
+        print("Error: No task files found in docs/tasks/ready/")
+        sys.exit(1)
+
+    print(f"Active task file: {task_file}")
+
+    start_phase = phase or "blue"
+
+    if start_phase == "blue":
+        print("Transitioning to Blue phase (Structural Blueprint)...")
+        await controller.run_blue_phase(task_file)
+
+        print("Transitioning to Red phase (Test Generation)...")
+        await controller.run_red_phase(task_file)
 
     print("Transitioning to Green phase (Implementation)...")
-    controller.current_phase = Phase.GREEN
+    await controller.run_green_phase(task_file)
 
     print("Transitioning to Magenta phase (Coverage Guardrail)...")
     await controller.run_magenta_loop()
+
+    done_dir = Path("docs/tasks/done")
+    done_dir.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(task_file), str(done_dir / task_file.name))
 
     print("TDD Loop execution complete.")
 

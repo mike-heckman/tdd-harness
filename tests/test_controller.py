@@ -42,7 +42,8 @@ def controller(config):
     ):
         mock_prompt_ctrl.return_value = MagicMock()
         mock_prompt_sub.return_value = MagicMock()
-        return TDDLoopController(config, registry)
+        mock_llm_client = MagicMock()
+        return TDDLoopController(config, registry, mock_llm_client)
 
 
 def test_is_path_allowed_global_lockdown(controller):
