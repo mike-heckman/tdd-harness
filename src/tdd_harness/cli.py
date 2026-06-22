@@ -3,12 +3,16 @@ Command-line interface for tdd-harness.
 """
 
 import argparse
+import asyncio
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .config import resolve_config_directory
+from .config import load_tdd_harness_config, resolve_config_directory
+from .controller import Phase, TDDLoopController
+from .mcp_client import MCPClient
+from .registry import ToolRegistry
 
 
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
@@ -71,7 +75,6 @@ def main():
 
     # Continue with the harness logic
     print("TDD Harness initialized successfully.")
-    import asyncio
 
     asyncio.run(async_main(config_dir))
 
@@ -80,20 +83,39 @@ async def async_main(config_dir: Path):
     """
     Async execution phase for CLI.
     """
-    from .config import load_tdd_harness_config
-    from .mcp_client import MCPClient
-    from .registry import ToolRegistry
-
-    _ = load_tdd_harness_config(config_dir)
+    config = load_tdd_harness_config(config_dir)
     mcp_client = MCPClient(server_config={})
     registry = ToolRegistry(mcp_client=mcp_client)
     await registry.initialize()
+
+    controller = TDDLoopController(config, registry)
+
+    print("Running Amber pre-flight validation...")
+    if not controller.pre_flight_validation():
+        print("Error: Amber pre-flight validation failed. Please fix issues before proceeding.")
+        sys.exit(1)
+
+    print("Amber phase complete. System is ready.")
 
     try:
         await registry.dispatch("index_repo", {})
         await registry.dispatch("doc_index_repo", {})
     except ValueError:
         pass
+
+    print("Transitioning to Blue phase (Structural Blueprint)...")
+    controller.current_phase = Phase.BLUE
+
+    print("Transitioning to Red phase (Test Generation)...")
+    controller.current_phase = Phase.RED
+
+    print("Transitioning to Green phase (Implementation)...")
+    controller.current_phase = Phase.GREEN
+
+    print("Transitioning to Magenta phase (Coverage Guardrail)...")
+    await controller.run_magenta_loop()
+
+    print("TDD Loop execution complete.")
 
 
 if __name__ == "__main__":

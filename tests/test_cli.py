@@ -94,3 +94,66 @@ def test_main_missing_config(capsys: pytest.CaptureFixture) -> None:
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
         assert "run 'tdd-harness init'" in captured.out
+
+
+@pytest.mark.asyncio
+async def test_async_main_success():
+    """Test async_main completes successfully."""
+    from unittest.mock import AsyncMock
+
+    from src.tdd_harness.cli import async_main
+    from src.tdd_harness.controller import Phase
+
+    with (
+        patch("src.tdd_harness.cli.sys.exit") as mock_exit,
+        patch("src.tdd_harness.cli.load_tdd_harness_config"),
+        patch("src.tdd_harness.cli.MCPClient"),
+        patch("src.tdd_harness.cli.ToolRegistry") as mock_registry,
+        patch("src.tdd_harness.cli.TDDLoopController") as mock_controller_cls,
+    ):
+        mock_registry_instance = MagicMock()
+        mock_registry_instance.initialize = AsyncMock()
+        mock_registry_instance.dispatch = AsyncMock()
+        mock_registry.return_value = mock_registry_instance
+
+        mock_controller_instance = MagicMock()
+        mock_controller_instance.pre_flight_validation.return_value = True
+        mock_controller_instance.run_magenta_loop = AsyncMock()
+        mock_controller_cls.return_value = mock_controller_instance
+
+        await async_main(Path("/tmp/config"))
+
+        mock_controller_instance.pre_flight_validation.assert_called_once()
+        assert mock_controller_instance.current_phase == Phase.GREEN
+        mock_controller_instance.run_magenta_loop.assert_awaited_once()
+        mock_exit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_async_main_pre_flight_failure():
+    """Test async_main exits on pre-flight failure."""
+    from unittest.mock import AsyncMock
+
+    from src.tdd_harness.cli import async_main
+
+    with (
+        patch("src.tdd_harness.cli.sys.exit") as mock_exit,
+        patch("src.tdd_harness.cli.load_tdd_harness_config"),
+        patch("src.tdd_harness.cli.MCPClient"),
+        patch("src.tdd_harness.cli.ToolRegistry") as mock_registry,
+        patch("src.tdd_harness.cli.TDDLoopController") as mock_controller_cls,
+    ):
+        mock_exit.side_effect = SystemExit(1)
+        mock_registry_instance = MagicMock()
+        mock_registry_instance.initialize = AsyncMock()
+        mock_registry.return_value = mock_registry_instance
+
+        mock_controller_instance = MagicMock()
+        mock_controller_instance.pre_flight_validation.return_value = False
+        mock_controller_cls.return_value = mock_controller_instance
+
+        with pytest.raises(SystemExit) as exc_info:
+            await async_main(Path("/tmp/config"))
+
+        assert exc_info.value.code == 1
+        mock_exit.assert_called_once_with(1)
