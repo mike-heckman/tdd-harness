@@ -1,0 +1,9 @@
+prompt: |
+  Analyze the following test/linter failure for {filepath}.
+  Code:
+  {code}
+  
+  Traceback:
+  {raw_error}
+  
+  Return a 2-3 sentence technical summary of the root cause AND a specific, actionable suggestion for what the primary agent should do differently to fix it. Do not include any other text.

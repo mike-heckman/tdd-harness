@@ -1,4 +1,3 @@
-import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,13 +13,27 @@ def config():
     c = TddHarnessConfig()
     c.harness["coverage_threshold"] = 80.0
     c.harness["max_uncovered_lines"] = 50
+    c.llm = {
+        "api_key": "dummy-key",
+        "base_url": "http://localhost:8000/v1",
+        "model": "gpt-4o",
+        "context_size": 8000,
+        "minimum_available_context": 1000,
+        "keep_turns": 2,
+    }
     return c
 
 
 @pytest.fixture
 def controller(config):
     registry = ToolRegistry()
-    return TDDLoopController(config, registry)
+    with (
+        patch("src.tdd_harness.controller.Prompt") as mock_prompt_ctrl,
+        patch("src.tdd_harness.sub_agents.Prompt") as mock_prompt_sub,
+    ):
+        mock_prompt_ctrl.return_value = MagicMock()
+        mock_prompt_sub.return_value = MagicMock()
+        return TDDLoopController(config, registry)
 
 
 def test_is_path_allowed_global_lockdown(controller):
@@ -174,28 +187,13 @@ async def test_stage_test_implementation_expected_error(
 @pytest.mark.asyncio
 @patch("src.tdd_harness.controller.run_lint")
 @patch("src.tdd_harness.controller.TDDLoopController.check_green_exit")
-@patch("src.tdd_harness.controller.AsyncOpenAI")
-async def test_success_approve(mock_openai, mock_check_green, mock_lint, controller, tmp_path):
+async def test_success_approve(mock_check_green, mock_lint, controller, tmp_path):
     controller.current_phase = Phase.GREEN
     mock_lint.return_value = {"status": "success"}
 
-    # Mock OpenAI response
-    mock_client = mock_openai.return_value
-    # Awaitable mock for create
-    future = asyncio.Future()
+    from unittest.mock import AsyncMock
 
-    class MockMessage:
-        content = "APPROVE"
-        tool_calls = None
-
-    class MockChoice:
-        message = MockMessage()
-
-    class MockResponse:
-        choices = [MockChoice()]
-
-    future.set_result(MockResponse())
-    mock_client.chat.completions.create.return_value = future
+    controller.review_agent.review = AsyncMock(return_value="APPROVE")
 
     result = await controller.success("Implement feature", task_file=None)
     assert result == "Phase completed successfully."
@@ -204,28 +202,13 @@ async def test_success_approve(mock_openai, mock_check_green, mock_lint, control
 @pytest.mark.asyncio
 @patch("src.tdd_harness.controller.run_lint")
 @patch("src.tdd_harness.controller.TDDLoopController.check_green_exit")
-@patch("src.tdd_harness.controller.AsyncOpenAI")
-async def test_success_reject(mock_openai, mock_check_green, mock_lint, controller, tmp_path):
+async def test_success_reject(mock_check_green, mock_lint, controller, tmp_path):
     controller.current_phase = Phase.GREEN
     mock_lint.return_value = {"status": "success"}
 
-    # Mock OpenAI response
-    mock_client = mock_openai.return_value
-    # Awaitable mock for create
-    future = asyncio.Future()
+    from unittest.mock import AsyncMock
 
-    class MockMessage:
-        content = "REJECT: Missing edge cases."
-        tool_calls = None
-
-    class MockChoice:
-        message = MockMessage()
-
-    class MockResponse:
-        choices = [MockChoice()]
-
-    future.set_result(MockResponse())
-    mock_client.chat.completions.create.return_value = future
+    controller.review_agent.review = AsyncMock(return_value="REJECT: Missing edge cases.")
 
     result = await controller.success("Implement feature", task_file=None)
     assert "Validation failed: Review Sub-Agent Rejected the implementation" in result
