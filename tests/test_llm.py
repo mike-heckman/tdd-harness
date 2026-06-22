@@ -15,7 +15,7 @@ def mock_config():
         "model": "gpt-4",
         "context_size": 8000,
         "minimum_available_context": 1000,
-        "keep_turns": 1,
+        "keep_turns": 2,
     }
     return config
 
@@ -23,12 +23,13 @@ def mock_config():
 @pytest.fixture
 def mock_prompt():
     prompt = MagicMock()
-    # Initially no cached size
     prompt.token_size.return_value = None
     prompt.update_token_size = MagicMock()
-    # Return a mock system message object
+
     mock_sys_msg = MagicMock()
     mock_sys_msg.content = "You are a helpful assistant."
+    mock_sys_msg.text = "You are a helpful assistant."
+    mock_sys_msg.token_count = 10
     prompt.get_system_message.return_value = mock_sys_msg
     return prompt
 
@@ -44,10 +45,13 @@ def mock_config_loader(mock_config, mock_prompt):
 @pytest.mark.asyncio
 async def test_llm_client_baseline_extraction(mock_config, mock_prompt, mock_config_loader):
     """Tests that the system message token size is extracted from API response if not cached."""
+    mock_prompt.get_system_message.return_value.token_count = 0
 
     mock_response = MagicMock()
-    mock_response.usage.prompt_tokens = 150  # This should include system message
+    mock_response.usage.prompt_tokens = 150
     mock_response.choices[0].message.content = "hello"
+    mock_response.choices[0].message.tool_calls = None
+    mock_response.choices[0].message.model_dump.return_value = {"role": "assistant", "content": "hello"}
 
     with patch("src.tdd_harness.llm.AsyncOpenAI", autospec=True) as mock_openai_class:
         mock_client = mock_openai_class.return_value
@@ -60,17 +64,20 @@ async def test_llm_client_baseline_extraction(mock_config, mock_prompt, mock_con
 
         await client.chat([Context(text="hello", context_type=ContextType.TASK_CONTEXT, token_count=5)])
 
-        # Verify baseline extraction logic
-        # If system message was 150 and user msg was small, prompt.update_token_size should be called
-        mock_prompt.update_token_size.assert_called()
+        mock_prompt.update_token_size.assert_called_with("gpt-4", 150)
 
 
 @pytest.mark.asyncio
-async def test_llm_client_context_compression_trigger(mock_config, mock_prompt, mock_config_loader):
+@patch("src.tdd_harness.config.load_prompt_config")
+async def test_llm_client_context_compression_trigger(
+    mock_load_prompt_config, mock_config, mock_prompt, mock_config_loader
+):
     """Tests that compression is triggered when remaining context falls below threshold."""
+    mock_comp_config = MagicMock()
+    mock_comp_config.prompt = "Compress this."
+    mock_load_prompt_config.return_value = mock_comp_config
 
-    mock_prompt.token_size.return_value = 500
-    messages = [Context(text="a" * 7000, context_type=ContextType.TASK_CONTEXT, token_count=7000)]
+    messages = [Context(text="a" * 30000, context_type=ContextType.TASK_CONTEXT, token_count=7000)]
 
     with patch("src.tdd_harness.llm.AsyncOpenAI", autospec=True) as mock_openai_class:
         mock_client = mock_openai_class.return_value
@@ -80,14 +87,14 @@ async def test_llm_client_context_compression_trigger(mock_config, mock_prompt, 
         client = LLMClient(mock_config_loader, mock_prompt)
         client.client = mock_client
 
-        # Mock compression response
         comp_response = MagicMock()
         comp_response.choices[0].message.content = "Summary of history"
-        comp_response.usage.prompt_tokens = 100
+        comp_response.choices[0].message.tool_calls = None
 
-        # Mock actual chat response
         chat_response = MagicMock()
         chat_response.choices[0].message.content = "Final answer"
+        chat_response.choices[0].message.tool_calls = None
+        chat_response.choices[0].message.model_dump.return_value = {"role": "assistant", "content": "Final answer"}
         chat_response.usage.prompt_tokens = 100
 
         mock_completions.create = AsyncMock()
@@ -95,17 +102,21 @@ async def test_llm_client_context_compression_trigger(mock_config, mock_prompt, 
 
         await client.chat(messages)
 
-        # Should have called create at least twice: once for compression, once for the actual chat
         assert mock_completions.create.call_count >= 2
+        mock_load_prompt_config.assert_called_with("compression_prompt")
 
 
 @pytest.mark.asyncio
-async def test_llm_client_compression_rebuilds_history(mock_config, mock_prompt, mock_config_loader):
+@patch("src.tdd_harness.config.load_prompt_config")
+async def test_llm_client_compression_rebuilds_history(
+    mock_load_prompt_config, mock_config, mock_prompt, mock_config_loader
+):
     """Tests that history is correctly rebuilt after compression."""
-    mock_prompt.token_size.return_value = 500
+    mock_comp_config = MagicMock()
+    mock_comp_config.prompt = "Compress this."
+    mock_load_prompt_config.return_value = mock_comp_config
 
-    # Large message to trigger compression
-    messages = [Context(text="a" * 7000, context_type=ContextType.TASK_CONTEXT, token_count=7000)]
+    messages = [Context(text="a" * 30000, context_type=ContextType.TASK_CONTEXT, token_count=7000)]
 
     with patch("src.tdd_harness.llm.AsyncOpenAI", autospec=True) as mock_openai_class:
         mock_client = mock_openai_class.return_value
@@ -115,29 +126,141 @@ async def test_llm_client_compression_rebuilds_history(mock_config, mock_prompt,
         client = LLMClient(mock_config_loader, mock_prompt)
         client.client = mock_client
 
-        # 1. Compression call
+        from src.tdd_harness.context import ContextBuilder
+
+        cb = ContextBuilder()
+        cb.clear()
+        cb.add_context(Context(text="old history", context_type=ContextType.TASK_CONTEXT))
+
         comp_response = MagicMock()
         comp_response.choices[0].message.content = "Summarized content"
-        comp_response.usage.prompt_tokens = 50
+        comp_response.choices[0].message.tool_calls = None
 
-        # 2. Final call
         chat_response = MagicMock()
         chat_response.choices[0].message.content = "Final response"
-        chat_response.usage.prompt_tokens = 50
+        chat_response.choices[0].message.tool_calls = None
+        chat_response.choices[0].message.model_dump.return_value = {"role": "assistant", "content": "Final response"}
 
         mock_completions.create = AsyncMock()
         mock_completions.create.side_effect = [comp_response, chat_response]
 
         await client.chat(messages)
 
-        # Verify the messages sent in the second call include the summary
-        # Call 0: compression prompt (the messages being compressed)
-        # Call 1: the new messages (system + summary + remaining)
         args, kwargs = mock_completions.create.call_args_list[1]
         sent_messages = kwargs["messages"]
 
-        # Should contain system message and the summary
         assert any("Summarized content" in m.get("content", "") for m in sent_messages)
+
+        from src.tdd_harness.context import ContextBuilder
+
+        cb = ContextBuilder()
+        assert len(cb.get_context()) > 0
+        cb.clear()
+
+
+@pytest.mark.asyncio
+async def test_llm_client_history_pruning(mock_config, mock_prompt, mock_config_loader):
+    """Tests that history is pruned based on keep_turns."""
+    mock_response = MagicMock()
+    mock_response.choices[0].message.content = "hello"
+    mock_response.choices[0].message.tool_calls = None
+    mock_response.choices[0].message.model_dump.return_value = {"role": "assistant", "content": "hello"}
+
+    with patch("src.tdd_harness.llm.AsyncOpenAI", autospec=True) as mock_openai_class:
+        mock_client = mock_openai_class.return_value
+        mock_completions = MagicMock()
+        mock_client.chat.completions = mock_completions
+        mock_completions.create = AsyncMock(return_value=mock_response)
+
+        client = LLMClient(mock_config_loader, mock_prompt)
+        client.client = mock_client
+
+        from src.tdd_harness.context import ContextBuilder
+
+        cb = ContextBuilder()
+        cb.clear()
+
+        # config keeps 2 turns. Let's do 3 chats.
+        await client.chat([Context(text="msg 1", context_type=ContextType.TASK_CONTEXT, token_count=5)])
+        await client.chat([Context(text="msg 2", context_type=ContextType.TASK_CONTEXT, token_count=5)])
+        await client.chat([Context(text="msg 3", context_type=ContextType.TASK_CONTEXT, token_count=5)])
+
+        # Assert pruning (keep_turns=2, so we expect msg 2 and msg 3, plus their responses)
+        chat_history = cb.get_context()
+        assert any("msg 2" in m.text for m in chat_history)
+        assert any("msg 3" in m.text for m in chat_history)
+
+        # We expect the 'hello' responses from assistant turns 2 and 3 to be present.
+        # But wait, pruning might have removed the first assistant response.
+        # Just ensure msg 1 is fully gone.
+        # Actually, "msg 1" was passed as TASK_CONTEXT. In the refactored code,
+        # keep_turns only removes CHAT_HISTORY. The incoming TASK_CONTEXT might still be there.
+        # Let's adjust to check just CHAT_HISTORY count.
+        assistant_turns = cb.get_context([ContextType.CHAT_HISTORY])
+        assert len(assistant_turns) == 2
+
+        cb.clear()
+
+
+@pytest.mark.asyncio
+async def test_llm_client_tool_calls(mock_config, mock_prompt, mock_config_loader):
+    """Tests that tool calls are handled and results are collected."""
+    mock_tool_call = MagicMock()
+    mock_tool_call.id = "call_123"
+    mock_tool_call.function.name = "my_tool"
+    mock_tool_call.function.arguments = '{"arg": "val"}'
+    mock_tool_call.model_dump.return_value = {
+        "id": "call_123",
+        "function": {"name": "my_tool", "arguments": '{"arg": "val"}'},
+    }
+
+    mock_tool_response = MagicMock()
+    mock_tool_response.choices[0].message.content = None
+    mock_tool_response.choices[0].message.tool_calls = [mock_tool_call]
+    mock_tool_response.choices[0].message.model_dump.return_value = {
+        "role": "assistant",
+        "tool_calls": [{"id": "call_123", "function": {"name": "my_tool", "arguments": '{"arg": "val"}'}}],
+    }
+
+    mock_final_response = MagicMock()
+    mock_final_response.choices[0].message.content = "Done with tool"
+    mock_final_response.choices[0].message.tool_calls = None
+    mock_final_response.choices[0].message.model_dump.return_value = {"role": "assistant", "content": "Done with tool"}
+
+    with patch("src.tdd_harness.llm.AsyncOpenAI", autospec=True) as mock_openai_class:
+        mock_client = mock_openai_class.return_value
+        mock_completions = MagicMock()
+        mock_client.chat.completions = mock_completions
+        mock_completions.create = AsyncMock()
+        mock_completions.create.side_effect = [mock_tool_response, mock_final_response]
+
+        client = LLMClient(mock_config_loader, mock_prompt)
+        client.client = mock_client
+
+        from src.tdd_harness.context import ContextBuilder
+
+        cb = ContextBuilder()
+        cb.clear()
+
+        mock_registry = MagicMock()
+        mock_res = MagicMock()
+        mock_res.success = True
+        mock_res.content = "tool output"
+        mock_registry.dispatch = AsyncMock(return_value=mock_res)
+
+        final_msg = await client.chat(
+            [Context(text="do tool", context_type=ContextType.TASK_CONTEXT, token_count=5)], registry=mock_registry
+        )
+
+        assert final_msg == "Done with tool"
+        mock_registry.dispatch.assert_called_with("my_tool", {"arg": "val"})
+
+        all_ctx = cb.get_context()
+        assert any("do tool" in m.text for m in all_ctx)
+        assert any(m.context_type == ContextType.TOOL_RESULT and "tool output" in m.text for m in all_ctx)
+        assert any("Done with tool" in m.text for m in all_ctx)
+
+        cb.clear()
 
 
 @pytest.mark.parametrize(
