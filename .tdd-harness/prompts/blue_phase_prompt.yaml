@@ -1,0 +1,4 @@
+prompt: |
+  You are executing the Blue Phase (Structural Blueprint).
+  Generate rigid interfaces, stubs, and abstract definitions. 
+  Code must pass syntax linting and the existing test suite to prevent breaking changes.
