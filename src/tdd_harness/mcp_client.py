@@ -2,10 +2,13 @@
 Client for interacting with Model Context Protocol servers.
 """
 
+import asyncio
 import sys
+from contextlib import AsyncExitStack
 from typing import Any
 
 from mcp import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
 
 
 class MCPClient:
@@ -23,27 +26,58 @@ class MCPClient:
         self.server_config = server_config
         self.session: ClientSession | None = None
         self.restart_policy = server_config.get("restart_policy", "exit")
+        self.exit_stack = AsyncExitStack()
+        self._retry_count = 0
 
-    def handle_failure(self, error: Exception) -> None:
+    async def close(self) -> None:
+        """
+        Close the connection and cleanup resources.
+        """
+        await self.exit_stack.aclose()
+        self.session = None
+
+    async def handle_failure(self, error: Exception) -> None:
         """
         Handle MCP server failure according to restart policy.
         """
         if self.restart_policy == "exit":
             print(f"MCP server failure (policy='exit'): {error}", file=sys.stderr)
             sys.exit(1)
-        # For 'always' and 'on-failure', a real implementation would attempt reconnection
-        # but for this stub we just pass
-        pass
+        elif self.restart_policy == "on-failure":
+            if self._retry_count < 1:
+                self._retry_count += 1
+                await self.close()
+                await self.connect()
+            else:
+                print(f"MCP server failure (policy='on-failure'): retries exhausted. {error}", file=sys.stderr)
+        elif self.restart_policy == "always":
+            await asyncio.sleep(1)
+            await self.close()
+            await self.connect()
 
     async def connect(self):
         """
         Connect to the MCP server.
         """
+        if not self.server_config:
+            return
+
+        command = self.server_config.get("command")
+        if not command:
+            return
+
+        args = self.server_config.get("args", [])
+        env = self.server_config.get("env", None)
+
+        server_parameters = StdioServerParameters(command=command, args=args, env=env)
+
         try:
-            # This is a stub as we don't have a real server to connect to in tests
-            pass
+            read, write = await self.exit_stack.enter_async_context(stdio_client(server_parameters))
+            self.session = await self.exit_stack.enter_async_context(ClientSession(read, write))
+            await self.session.initialize()
+            self._retry_count = 0  # Reset retry count on successful connection
         except Exception as e:
-            self.handle_failure(e)
+            await self.handle_failure(e)
 
     async def get_tools(self) -> list[dict[str, Any]]:
         """
@@ -52,11 +86,14 @@ class MCPClient:
         Returns:
             A list of tool definitions.
         """
-        try:
-            # Stub for testing
+        if not self.server_config or not self.session:
             return []
+
+        try:
+            result = await self.session.list_tools()
+            return [tool.model_dump() for tool in result.tools]
         except Exception as e:
-            self.handle_failure(e)
+            await self.handle_failure(e)
             return []
 
     async def call_tool(self, name: str, arguments: dict[str, object]) -> object:  # Reason: Can return any object
@@ -70,9 +107,12 @@ class MCPClient:
         Returns:
             The result of the tool call.
         """
-        try:
-            # Stub for testing
+        if not self.server_config or not self.session:
             return {}
+
+        try:
+            result = await self.session.call_tool(name, arguments=arguments)
+            return result
         except Exception as e:
-            self.handle_failure(e)
+            await self.handle_failure(e)
             raise
