@@ -15,6 +15,7 @@ def test_parse_args():
     args = parse_args([])
     assert args.project_dir is None
     assert args.phase is None
+    assert args.command is None
 
     # Test with project directory
     args = parse_args(["--project-dir", "/tmp/project"])
@@ -23,6 +24,43 @@ def test_parse_args():
     # Test with phase
     args = parse_args(["--phase", "green"])
     assert args.phase == "green"
+
+    # Test with init command
+    args = parse_args(["init"])
+    assert args.command == "init"
+
+
+def test_init_project(capsys: pytest.CaptureFixture):
+    """Test init_project command."""
+    from src.tdd_harness.cli import init_project
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        init_project(str(tmp_path))
+
+        config_dir = tmp_path / ".tdd-harness"
+        assert config_dir.exists()
+        assert config_dir.is_dir()
+
+        config_file = config_dir / "config.yaml"
+        assert config_file.exists()
+        assert "provider: openai" in config_file.read_text()
+
+        prompts_dir = config_dir / "prompts"
+        assert prompts_dir.exists()
+
+        system_message = prompts_dir / "system_message.yaml"
+        assert system_message.exists()
+        assert "You are an AI developer" in system_message.read_text()
+
+        compression_prompt = prompts_dir / "compression_prompt.yaml"
+        assert compression_prompt.exists()
+        assert "Summarize the following chat history" in compression_prompt.read_text()
+
+        # Test running again aborts gracefully
+        init_project(str(tmp_path))
+        captured = capsys.readouterr()
+        assert "already exists. Initialization aborted." in captured.out
 
 
 def test_main_with_clean_git():

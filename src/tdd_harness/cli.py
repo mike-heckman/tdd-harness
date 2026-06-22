@@ -27,6 +27,12 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(description="TDD Harness CLI")
     parser.add_argument(
+        "command",
+        nargs="?",
+        help="Command to run (e.g. init)",
+        default=None,
+    )
+    parser.add_argument(
         "--project-dir",
         help="Project directory to use for configuration",
         default=None,
@@ -42,12 +48,66 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     return known_args
 
 
+def init_project(project_dir: str | None) -> None:
+    """
+    Initialize a new tdd-harness project.
+
+    Args:
+        project_dir: Optional project directory to initialize.
+    """
+    base_dir = Path(project_dir).resolve() if project_dir else Path.cwd()
+    config_dir = base_dir / ".tdd-harness"
+
+    if config_dir.exists():
+        print(f"Directory {config_dir} already exists. Initialization aborted.")
+        return
+
+    prompts_dir = config_dir / "prompts"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+
+    config_yaml = """llm:
+  provider: openai
+  base_url: http://localhost:8000/v1
+  context_size: 8192
+  minimum_available_context: 2048
+  keep_turns: 1
+
+harness:
+  coverage_threshold: 80.0
+  max_uncovered_lines: 50
+  anti_thrashing:
+    max_duplicate_failures: 3
+    max_window_failures: 4
+    window_size: 5
+
+mcp_servers: []
+extensions: []
+"""
+    (config_dir / "config.yaml").write_text(config_yaml)
+
+    system_message_yaml = """prompt: |
+  You are an AI developer...
+"""
+    (prompts_dir / "system_message.yaml").write_text(system_message_yaml)
+
+    compression_prompt_yaml = """prompt: |
+  Summarize the following chat history concisely, retaining all critical technical decisions and failures.
+"""
+    (prompts_dir / "compression_prompt.yaml").write_text(compression_prompt_yaml)
+
+    print(f"Initialized tdd-harness in {config_dir}")
+
+
 def main():
     """
     Main entry point for the CLI.
     """
     load_dotenv()
     args = parse_args()
+
+    if args.command == "init":
+        init_project(args.project_dir)
+        sys.exit(0)
 
     # Resolve the config directory
     try:
