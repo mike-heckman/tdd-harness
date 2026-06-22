@@ -76,6 +76,8 @@ class TDDLoopController:
 
         self.past_failure_summaries: list[str] = []
         self.session_modified_files: set[str] = set()
+        self._phase_successful = False
+        self._initial_blue_test_count = 0
 
         class _ConfigLoaderWrapper:
             def __init__(self, cfg: TddHarnessConfig) -> None:
@@ -173,7 +175,7 @@ class TDDLoopController:
             elif self.current_phase == Phase.GREEN:
                 self.check_green_exit()
             elif self.current_phase == Phase.BLUE:
-                self.check_blue_exit(0)
+                self.check_blue_exit(getattr(self, "_initial_blue_test_count", 0))
             elif self.current_phase == Phase.MAGENTA:
                 self.check_magenta_exit(100.0, 0)
         except PhaseValidationError as e:
@@ -236,6 +238,7 @@ class TDDLoopController:
             except ValueError:
                 pass  # tool might not be loaded in mock tests
 
+        self._phase_successful = True
         return "Phase completed successfully."
 
     def abort(self, reason: str) -> str:
@@ -560,15 +563,38 @@ class TDDLoopController:
         if any_failed:
             raise PhaseValidationError("Green phase requires the test suite to pass.")
 
+    def _get_test_count(self) -> int:
+        """
+        Helper to parse the pytest report log and return the test count.
+
+        Returns:
+            The number of tests executed as an integer.
+        """
+        import json
+
+        report_log_path = Path("temp/pytest-report.jsonl")
+        count = 0
+        if report_log_path.exists():
+            with open(report_log_path, encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                        if record.get("$report_type") == "TestReport" and record.get("when") == "call":
+                            count += 1
+                    except json.JSONDecodeError:
+                        continue
+        return count
+
     def check_blue_exit(self, initial_test_count: int) -> None:
         """
         Verify tests pass and count hasn't decreased.
         """
         self.check_green_exit()
-        # In a real implementation we would parse the actual test count from the stdout/runner output
-        # For now, we mock the parsing or assume a default pass if no easy count available.
-        # This will be refined as adapter parsers are fleshed out.
-        pass
+        current_test_count = self._get_test_count()
+        if current_test_count < initial_test_count:
+            raise PhaseValidationError(f"Test count decreased from {initial_test_count} to {current_test_count}.")
 
     def check_magenta_exit(self, current_coverage: float, uncovered_lines: int) -> None:
         """
@@ -608,6 +634,142 @@ class TDDLoopController:
         if not res.success:
             raise RuntimeError(res.error)
         return res.content
+
+    async def run_blue_phase(self, task_file: Path) -> None:
+        """
+        Orchestrates the Blue (Structural Blueprint) phase end-to-end.
+        """
+        self.current_phase = Phase.BLUE
+        self._phase_successful = False
+
+        # 1. Capture initial test count
+        run_test(self.config)
+        self._initial_blue_test_count = self._get_test_count()
+
+        # 2. Assemble Context
+        task_content = task_file.read_text(encoding="utf-8")
+        if "---" in task_content:
+            parts = task_content.split("---", 2)
+            frontmatter = yaml.safe_load(parts[1])
+            context_text = parts[2].strip()
+        else:
+            frontmatter = {}
+            context_text = task_content
+
+        success_criteria = frontmatter.get("success_criteria", [])
+
+        from src.tdd_harness.context import Context, ContextBuilder, ContextType
+
+        cb = ContextBuilder()
+        cb.clear()
+
+        # Add phase instructions
+        phase_doc_path = Path("docs/phases/02-blue-structural-blueprint.md")
+        if phase_doc_path.exists():
+            phase_doc = phase_doc_path.read_text(encoding="utf-8")
+            cb.add_context(Context(text=phase_doc, context_type=ContextType.SYSTEM))
+
+        cb.add_context(Context(text=context_text, context_type=ContextType.TASK_CONTEXT))
+        for criteria in success_criteria:
+            cb.add_context(Context(text=f"Criteria: {criteria}", context_type=ContextType.TASK_CRITERIA))
+
+        target_files = frontmatter.get("target_files", [])
+        for file in target_files:
+            file_path = Path(file)
+            if file_path.exists():
+                source = self.read_file_safe(str(file_path))
+                cb.add_context(
+                    Context(text=f"File: {file}\n```python\n{source}\n```", context_type=ContextType.FILE_SOURCE)
+                )
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_symbols",
+                    "description": "Search for symbols across the project.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_symbol_source",
+                    "description": "Get the source code of a specific symbol.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"symbol": {"type": "string"}},
+                        "required": ["symbol"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "ask_researcher",
+                    "description": "Ask the Research Sub-Agent a question.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "stage_implementation",
+                    "description": "Stage an implementation for the Blue phase.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"filepath": {"type": "string"}, "code": {"type": "string"}},
+                        "required": ["filepath", "code"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "success",
+                    "description": "Signal that the phase is successfully completed.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"message": {"type": "string"}},
+                        "required": ["message"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "abort",
+                    "description": "Abort the phase execution.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"reason": {"type": "string"}},
+                        "required": ["reason"],
+                    },
+                },
+            },
+        ]
+
+        self.tracker.reset()
+
+        # 3. Tool-call loop
+        self._blue_loop_active = True
+        while self._blue_loop_active:
+            await self.llm_client.chat(contexts=[], tools=tools, registry=self.registry)
+
+            if self._phase_successful:
+                self._blue_loop_active = False
+                break
+
+            if self.tracker.should_abort():
+                self.abort("Anti-thrashing limits exceeded.")
 
     async def run_magenta_loop(self) -> None:
         """
