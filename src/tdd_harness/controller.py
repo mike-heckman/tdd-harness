@@ -660,49 +660,25 @@ class TDDLoopController:
                 except PhaseValidationError:
                     pass
 
-                cb = self.context_builder
-                cb.clear()
+                def assembler(fp: str = file_path, ml: list[int] = missing_lines) -> None:
+                    cb = self.context_builder
+                    cb.clear()
 
-                try:
-                    phase_prompt = Prompt("magenta_phase_prompt").get_system_message()
-                    cb.add_context(phase_prompt)
-                except FileNotFoundError:
-                    logger.warning("No prompt found for magenta phase.")
+                    try:
+                        phase_prompt = Prompt("magenta_phase_prompt").get_system_message()
+                        cb.add_context(phase_prompt)
+                    except FileNotFoundError:
+                        logger.warning("No prompt found for magenta phase.")
 
-                context_text = f"File: {file_path} is missing test coverage for lines: {missing_lines}. Please write additional tests to cover these lines."
-                cb.add_context(Context(text=context_text, context_type=ContextType.TASK_CONTEXT))
+                    context_text = f"File: {fp} is missing test coverage for lines: {ml}. Please write additional tests to cover these lines."
+                    cb.add_context(Context(text=context_text, context_type=ContextType.TASK_CONTEXT))
 
-                source = self.read_file_safe(file_path)
-                cb.add_context(
-                    Context(text=f"File: {file_path}\n```python\n{source}\n```", context_type=ContextType.FILE_SOURCE)
-                )
+                    source = self.read_file_safe(fp)
+                    cb.add_context(
+                        Context(text=f"File: {fp}\n```python\n{source}\n```", context_type=ContextType.FILE_SOURCE)
+                    )
 
-                tools = get_tools_for_phase(self.current_phase.value)
-
-                self.tracker.reset()
-                self.past_failure_summaries.clear()
-                self._phase_successful = False
-
-                self._magenta_loop_active = True
-                last_failure_count = 0
-                while self._magenta_loop_active:
-                    if len(self.past_failure_summaries) > last_failure_count:
-                        for pm in self.past_failure_summaries[last_failure_count:]:
-                            cb.add_context(
-                                Context(
-                                    text=f"Post-Mortem Guidance:\n{pm}", context_type=ContextType.POST_MORTEM_SUMMARY
-                                )
-                            )
-                        last_failure_count = len(self.past_failure_summaries)
-
-                    await self.llm_client.chat(contexts=[], tools=tools, registry=self.registry)
-
-                    if self._phase_successful:
-                        self._magenta_loop_active = False
-                        break
-
-                    if self.tracker.should_abort():
-                        self.abort("Anti-thrashing limits exceeded.")
+                await self._run_phase_loop(Phase.MAGENTA, assembler)
 
                 # After LLM action, re-run global coverage to verify
                 orchestrate_global(self.config, Path.cwd())
