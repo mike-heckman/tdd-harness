@@ -38,6 +38,11 @@ def config():
 @pytest.fixture
 def controller(config):
     registry = ToolRegistry()
+    from src.tdd_harness.config import HarnessContext
+    from src.tdd_harness.context import ContextBuilder
+
+    harness_ctx = HarnessContext()
+    context_builder = ContextBuilder()
     with (
         patch("src.tdd_harness.controller.Prompt") as mock_prompt_ctrl,
         patch("src.tdd_harness.sub_agents.Prompt") as mock_prompt_sub,
@@ -45,7 +50,7 @@ def controller(config):
         mock_prompt_ctrl.return_value = MagicMock()
         mock_prompt_sub.return_value = MagicMock()
         mock_llm_client = MagicMock()
-        return TDDLoopController(config, registry, mock_llm_client)
+        return TDDLoopController(config, registry, mock_llm_client, harness_ctx, context_builder)
 
 
 @patch("src.tdd_harness.task_loader.TaskLoader.process_ready_tasks")
@@ -177,9 +182,7 @@ async def test_run_red_phase_post_mortem_injection(controller, tmp_path):
             controller.past_failure_summaries.append("Simulated test failure guidance")
         else:
             # Second turn: verify ContextBuilder has the failure
-            from src.tdd_harness.context import ContextBuilder
-
-            cb = ContextBuilder()
+            cb = controller.context_builder
             feedback_contexts = [ctx for ctx in cb.get_context() if "Simulated test failure guidance" in ctx.text]
             assert len(feedback_contexts) == 1
             controller._phase_successful = True
@@ -229,9 +232,7 @@ async def test_run_green_phase_post_mortem_injection(controller, tmp_path):
             controller.past_failure_summaries.append("Simulated test failure guidance")
         else:
             # Second turn: verify ContextBuilder has the failure
-            from src.tdd_harness.context import ContextBuilder
-
-            cb = ContextBuilder()
+            cb = controller.context_builder
             feedback_contexts = [ctx for ctx in cb.get_context() if "Simulated test failure guidance" in ctx.text]
             assert len(feedback_contexts) == 1
             controller._phase_successful = True

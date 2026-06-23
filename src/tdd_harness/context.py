@@ -74,25 +74,14 @@ class Context:
 
 class ContextBuilder:
     """
-    A stateful stack manager for context payloads (Singleton).
+    A stateful stack manager for context payloads.
     """
-
-    _instance = None
-
-    def __new__(cls, *args: Any, **kwargs: Any) -> "ContextBuilder":
-        """
-        Create or return the singleton instance.
-        """
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._stack = []
-        return cls._instance
 
     def __init__(self):
         """
         Initialize the context stack.
         """
-        pass
+        self._stack: list[Context] = []
 
     def clear(self) -> None:
         """

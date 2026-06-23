@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.tdd_harness.context import Context, ContextType
+from src.tdd_harness.context import Context, ContextBuilder, ContextType
 from src.tdd_harness.llm import LLMClient
 
 
@@ -59,7 +59,7 @@ async def test_llm_client_baseline_extraction(mock_config, mock_prompt, mock_con
         mock_client.chat.completions = mock_completions
         mock_completions.create = AsyncMock(return_value=mock_response)
 
-        client = LLMClient(mock_config_loader, mock_prompt)
+        client = LLMClient(mock_config_loader, mock_prompt, ContextBuilder())
         client.client = mock_client
 
         await client.chat([Context(text="hello", context_type=ContextType.TASK_CONTEXT, token_count=5)])
@@ -74,7 +74,7 @@ async def test_llm_client_context_exhausted(mock_config, mock_prompt, mock_confi
 
     with patch("src.tdd_harness.llm.AsyncOpenAI", autospec=True) as mock_openai_class:
         mock_client = mock_openai_class.return_value
-        client = LLMClient(mock_config_loader, mock_prompt)
+        client = LLMClient(mock_config_loader, mock_prompt, ContextBuilder())
         client.client = mock_client
 
         with pytest.raises(RuntimeError, match="Context Exhausted"):
@@ -91,8 +91,6 @@ async def test_llm_client_context_compression_trigger(
     mock_comp_config.prompt = "Compress this."
     mock_load_prompt_config.return_value = mock_comp_config
 
-    from src.tdd_harness.context import ContextBuilder
-
     cb = ContextBuilder()
     cb.clear()
     cb.add_context(Context(text="a" * 30000, context_type=ContextType.CHAT_HISTORY, token_count=7000))
@@ -103,7 +101,7 @@ async def test_llm_client_context_compression_trigger(
         mock_completions = MagicMock()
         mock_client.chat.completions = mock_completions
 
-        client = LLMClient(mock_config_loader, mock_prompt)
+        client = LLMClient(mock_config_loader, mock_prompt, cb)
         client.client = mock_client
 
         comp_response = MagicMock()
@@ -142,12 +140,9 @@ async def test_llm_client_compression_rebuilds_history(
         mock_completions = MagicMock()
         mock_client.chat.completions = mock_completions
 
-        client = LLMClient(mock_config_loader, mock_prompt)
-        client.client = mock_client
-
-        from src.tdd_harness.context import ContextBuilder
-
         cb = ContextBuilder()
+        client = LLMClient(mock_config_loader, mock_prompt, cb)
+        client.client = mock_client
         cb.clear()
         cb.add_context(
             Context(text="old history " + ("a" * 30000), context_type=ContextType.CHAT_HISTORY, token_count=7000)
@@ -172,9 +167,6 @@ async def test_llm_client_compression_rebuilds_history(
 
         assert any("Summarized content" in m.get("content", "") for m in sent_messages)
 
-        from src.tdd_harness.context import ContextBuilder
-
-        cb = ContextBuilder()
         assert len(cb.get_context()) > 0
         cb.clear()
 
@@ -193,12 +185,9 @@ async def test_llm_client_history_pruning(mock_config, mock_prompt, mock_config_
         mock_client.chat.completions = mock_completions
         mock_completions.create = AsyncMock(return_value=mock_response)
 
-        client = LLMClient(mock_config_loader, mock_prompt)
-        client.client = mock_client
-
-        from src.tdd_harness.context import ContextBuilder
-
         cb = ContextBuilder()
+        client = LLMClient(mock_config_loader, mock_prompt, cb)
+        client.client = mock_client
         cb.clear()
 
         # config keeps 2 turns. Let's do 3 chats.
@@ -255,12 +244,9 @@ async def test_llm_client_tool_calls(mock_config, mock_prompt, mock_config_loade
         mock_completions.create = AsyncMock()
         mock_completions.create.side_effect = [mock_tool_response, mock_final_response]
 
-        client = LLMClient(mock_config_loader, mock_prompt)
-        client.client = mock_client
-
-        from src.tdd_harness.context import ContextBuilder
-
         cb = ContextBuilder()
+        client = LLMClient(mock_config_loader, mock_prompt, cb)
+        client.client = mock_client
         cb.clear()
 
         mock_registry = MagicMock()
@@ -301,7 +287,7 @@ def test_llm_client_missing_config(mock_config, mock_prompt, missing_key, error_
     loader.get_prompt.return_value = mock_prompt
 
     with pytest.raises(ValueError, match=error_msg):
-        LLMClient(loader, mock_prompt)
+        LLMClient(loader, mock_prompt, ContextBuilder())
 
 
 def test_llm_client_missing_multiple_configs(mock_config, mock_prompt):
@@ -314,7 +300,7 @@ def test_llm_client_missing_multiple_configs(mock_config, mock_prompt):
     loader.get_prompt.return_value = mock_prompt
 
     with pytest.raises(ValueError) as excinfo:
-        LLMClient(loader, mock_prompt)
+        LLMClient(loader, mock_prompt, ContextBuilder())
 
     error_msg = str(excinfo.value)
     assert "Model not specified in LLM configuration" in error_msg

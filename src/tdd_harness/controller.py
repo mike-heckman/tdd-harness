@@ -47,6 +47,8 @@ class TDDLoopController:
         config: TddHarnessConfig,
         registry: ToolRegistry,
         llm_client: LLMClient,
+        harness_ctx: HarnessContext,
+        context_builder: ContextBuilder,
         security_interceptor: SecurityInterceptor | None = None,
         task_loader: TaskLoader | None = None,
     ):
@@ -65,7 +67,8 @@ class TDDLoopController:
 
         self._current_phase = Phase.AMBER
 
-        self.harness_ctx = HarnessContext()
+        self.harness_ctx = harness_ctx
+        self.context_builder = context_builder
         self.session_id = self.harness_ctx.session_id
 
         self.past_failure_summaries: list[str] = []
@@ -508,7 +511,7 @@ class TDDLoopController:
 
         success_criteria = frontmatter.get("success_criteria", [])
 
-        cb = ContextBuilder()
+        cb = self.context_builder
         cb.clear()
 
         # Add phase instructions
@@ -571,7 +574,7 @@ class TDDLoopController:
 
         success_criteria = frontmatter.get("success_criteria", [])
 
-        cb = ContextBuilder()
+        cb = self.context_builder
         cb.clear()
 
         # Add phase instructions
@@ -644,7 +647,7 @@ class TDDLoopController:
 
         success_criteria = frontmatter.get("success_criteria", [])
 
-        cb = ContextBuilder()
+        cb = self.context_builder
         cb.clear()
 
         # Add phase instructions
@@ -756,7 +759,7 @@ class TDDLoopController:
                 except PhaseValidationError:
                     pass
 
-                cb = ContextBuilder()
+                cb = self.context_builder
                 cb.clear()
 
                 try:

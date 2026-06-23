@@ -16,7 +16,7 @@ class LLMClient:
     """
 
     def __init__(
-        self, config_loader: object, prompt: object
+        self, config_loader: object, prompt: object, context_builder: ContextBuilder
     ):  # Reason: Avoid circular imports and complex mock typings
         """
         Initializes the LLMClient.
@@ -24,9 +24,11 @@ class LLMClient:
         Args:
             config_loader: The configuration loader.
             prompt: The prompt manager.
+            context_builder: The context builder instance.
         """
         self.config_loader = config_loader
         self.prompt = prompt
+        self.context_builder = context_builder
         self.config = config_loader.get_config()  # type: ignore
         self.llm_config = self.config.llm
 
@@ -78,7 +80,7 @@ class LLMClient:
 
         # Replace the entire flat_history block in ContextBuilder with the new summary
         context_ids = [c.id for c in flat_history]
-        ContextBuilder().replace_with_summary(context_ids, summary_ctx.text)
+        self.context_builder.replace_with_summary(context_ids, summary_ctx.text)
 
     async def _handle_tool_calls(
         self, msg: object, messages: list[dict], current_turn: list[Context], registry: object | None
@@ -135,7 +137,7 @@ class LLMClient:
             tools: Optional list of OpenAI-compatible tool schemas.
             registry: Optional tool registry for executing tool calls.
         """
-        cb = ContextBuilder()
+        cb = self.context_builder
 
         # Add incoming contexts if they aren't already in the builder
         for c in contexts:
