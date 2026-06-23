@@ -75,7 +75,7 @@ def test_main_with_clean_git():
         config_dir = tmp_path / ".tdd-harness"
         config_dir.mkdir()
 
-        with patch("src.tdd_harness.cli.resolve_config_directory") as mock_resolve:
+        with patch("src.tdd_harness.cli.ConfigResolver.resolve") as mock_resolve:
             mock_resolve.return_value = config_dir
 
             with patch("src.tdd_harness.cli.async_main"):
@@ -102,7 +102,7 @@ def test_main_with_dirty_git():
         config_dir = tmp_path / ".tdd-harness"
         config_dir.mkdir()
 
-        with patch("src.tdd_harness.cli.resolve_config_directory") as mock_resolve:
+        with patch("src.tdd_harness.cli.ConfigResolver.resolve") as mock_resolve:
             mock_resolve.return_value = config_dir
 
             with patch("subprocess.run") as mock_run:
@@ -123,7 +123,7 @@ def test_main_missing_config(capsys: pytest.CaptureFixture) -> None:
     Args:
         capsys: Pytest fixture to capture stdout and stderr.
     """
-    with patch("src.tdd_harness.cli.resolve_config_directory") as mock_resolve:
+    with patch("src.tdd_harness.cli.ConfigResolver.resolve") as mock_resolve:
         mock_resolve.side_effect = FileNotFoundError("Config directory not found")
 
         with pytest.raises(SystemExit) as exc_info:
@@ -144,7 +144,7 @@ def test_main_harness_abort(capsys: pytest.CaptureFixture):
         config_dir = tmp_path / ".tdd-harness"
         config_dir.mkdir()
 
-        with patch("src.tdd_harness.cli.resolve_config_directory", return_value=config_dir):
+        with patch("src.tdd_harness.cli.ConfigResolver.resolve", return_value=config_dir):
             with patch("subprocess.run", return_value=MagicMock(stdout="", stderr="", returncode=0)):
                 with patch("src.tdd_harness.cli.async_main") as mock_async_main:
                     mock_async_main.side_effect = HarnessAbort("Abort reason")
@@ -165,7 +165,7 @@ def test_main_mcp_fatal_error(capsys: pytest.CaptureFixture):
         config_dir = tmp_path / ".tdd-harness"
         config_dir.mkdir()
 
-        with patch("src.tdd_harness.cli.resolve_config_directory", return_value=config_dir):
+        with patch("src.tdd_harness.cli.ConfigResolver.resolve", return_value=config_dir):
             with patch("subprocess.run", return_value=MagicMock(stdout="", stderr="", returncode=0)):
                 with patch("src.tdd_harness.cli.async_main") as mock_async_main:
                     mock_async_main.side_effect = MCPFatalError("Fatal error")

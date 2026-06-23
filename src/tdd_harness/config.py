@@ -81,47 +81,49 @@ class HarnessContext:
         return self.project_dir / ".tdd-harness" / self.session_id / "reports"
 
 
-CACHE_TDD_DIRECTORIES: list[Path] = []
-
-
-def build_cache_tdd_directories(project_dir: str | Path | None = None, force: bool = False) -> list[Path]:
+class ConfigResolver:
     """
-    Build a cached list of .tdd-harness directories to search for configuration files.
+    Resolver for finding configuration directories with caching.
     """
-    global CACHE_TDD_DIRECTORIES
 
-    if CACHE_TDD_DIRECTORIES:
-        if force:
-            CACHE_TDD_DIRECTORIES.clear()
-        else:
-            return CACHE_TDD_DIRECTORIES
+    def __init__(self) -> None:
+        """
+        Initialize the resolver with an empty cache.
+        """
+        self._cache: list[Path] = []
 
-    if project_dir:
-        config_dir = Path(project_dir) / ".tdd-harness"
-        if config_dir.exists():
-            CACHE_TDD_DIRECTORIES.append(config_dir)
+    def get_directories(self, project_dir: str | Path | None = None) -> list[Path]:
+        """
+        Build a cached list of .tdd-harness directories to search for configuration files.
+        """
+        if self._cache:
+            return self._cache
 
-    # Fallback to current working directory
-    cwd_config = Path.cwd() / ".tdd-harness"
-    if cwd_config.exists() and cwd_config not in CACHE_TDD_DIRECTORIES:
-        CACHE_TDD_DIRECTORIES.append(cwd_config)
+        if project_dir:
+            config_dir = Path(project_dir) / ".tdd-harness"
+            if config_dir.exists():
+                self._cache.append(config_dir)
 
-    # Fallback to user home directory
-    home_config = Path.home() / ".tdd-harness"
-    if home_config.exists() and home_config not in CACHE_TDD_DIRECTORIES:
-        CACHE_TDD_DIRECTORIES.append(home_config)
+        # Fallback to current working directory
+        cwd_config = Path.cwd() / ".tdd-harness"
+        if cwd_config.exists() and cwd_config not in self._cache:
+            self._cache.append(cwd_config)
 
-    if CACHE_TDD_DIRECTORIES:
-        return CACHE_TDD_DIRECTORIES
+        # Fallback to user home directory
+        home_config = Path.home() / ".tdd-harness"
+        if home_config.exists() and home_config not in self._cache:
+            self._cache.append(home_config)
 
-    raise FileNotFoundError("No .tdd-harness directory found in any fallback location.")
+        if self._cache:
+            return self._cache
 
+        raise FileNotFoundError("No .tdd-harness directory found in any fallback location.")
 
-def resolve_config_directory(project_dir: str | None = None) -> Path:
-    """
-    Resolve the path to the .tdd-harness directory with fallbacks.
-    """
-    return build_cache_tdd_directories(project_dir)[0]
+    def resolve(self, project_dir: str | Path | None = None) -> Path:
+        """
+        Resolve the path to the .tdd-harness directory with fallbacks.
+        """
+        return self.get_directories(project_dir)[0]
 
 
 def load_tdd_harness_config(config_dir: Path) -> TddHarnessConfig:
@@ -156,7 +158,8 @@ def load_prompt_config(prompt_name: str, project_dir: str | Path | None = None) 
     Load a specific prompt configuration by checking resolution fallbacks.
     """
     prompt_file = None
-    for config_dir in build_cache_tdd_directories(project_dir):
+    resolver = ConfigResolver()
+    for config_dir in resolver.get_directories(project_dir):
         candidate = config_dir / "prompts" / f"{prompt_name}.yaml"
         if candidate.exists():
             prompt_file = candidate

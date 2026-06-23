@@ -11,7 +11,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .config import HarnessContext, load_tdd_harness_config, resolve_config_directory
+from .config import ConfigResolver, HarnessContext, load_tdd_harness_config
 from .context import ContextBuilder
 from .controller import TDDLoopController
 from .exceptions import HarnessAbort, MCPFatalError
@@ -119,7 +119,7 @@ def main():
 
     # Resolve the config directory
     try:
-        config_dir = resolve_config_directory(args.project_dir)
+        config_dir = ConfigResolver().resolve(args.project_dir)
     except FileNotFoundError as e:
         print(f"Error: {e}\nPlease run 'tdd-harness init' to set up a new project.")
         sys.exit(1)
