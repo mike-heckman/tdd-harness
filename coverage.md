@@ -1,7 +1,7 @@
 # Test Coverage Report
 
-- **Date:** 2026-06-22 21:42:49
-- **Branch:** `task/0040`
+- **Date:** 2026-06-22 21:54:20
+- **Branch:** `task/0041`
 - **Status:** PASSED
 
 ### LCOV Aggregated
@@ -17,7 +17,7 @@
 | src/tdd_harness/cli.py                   | 107 | 103 | 96.26% | 117-118, 137, 217 |
 | src/tdd_harness/config.py                | 84 | 71 | 84.52% | 36, 95, 117, 133, 141-148, 166 |
 | src/tdd_harness/context.py               | 68 | 65 | 95.59% | 56, 135-136 |
-| src/tdd_harness/controller.py            | 463 | 395 | 85.31% | 117, 139-142, 169-170, 199, 229, 261, 270-273, 276-280, 282-283, 290, 315-318, 320-321, 345, 351, 360-361, 388, 393, 395, 398, 434, 439-440, 472-477, 488, 502-503, 543, 568, 603, 605-611, 617-618, 634, 654, 663, 685-686, 691, 699-700 |
+| src/tdd_harness/controller.py            | 449 | 386 | 85.97% | 118, 140-143, 170-171, 200, 230, 262, 271-274, 277-281, 283-284, 291, 316-319, 321-322, 346, 352, 361-362, 389, 394, 396, 399, 435, 440-441, 473-478, 489, 502-503, 545, 570, 608, 610-616, 622-623, 639, 659, 669 |
 | src/tdd_harness/coverage_parser.py       | 53 | 50 | 94.34% | 50, 53-54 |
 | src/tdd_harness/exceptions.py            | 8 | 8 | 100.00% |  |
 | src/tdd_harness/llm.py                   | 117 | 114 | 97.44% | 129-130, 192 |
@@ -52,7 +52,8 @@
 | tests/test_security.py                   | 68 | 68 | 100.00% |  |
 | tests/test_sub_agents.py                 | 68 | 68 | 100.00% |  |
 | tests/test_task_loader.py                | 106 | 105 | 99.06% | 56 |
+| tests/test_tool_schemas.py               | 10 | 10 | 100.00% |  |
 | tests/test_tracker.py                    | 58 | 58 | 100.00% |  |
 | tests/test_utils.py                      | 54 | 54 | 100.00% |  |
-| **LCOV Aggregated Language Counts** | 3487 | 3338 | 95.73% | |
+| **LCOV Aggregated Language Counts** | 3483 | 3339 | 95.87% | |
 

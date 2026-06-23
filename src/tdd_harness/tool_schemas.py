@@ -101,6 +101,19 @@ AVAILABLE_TOOLS: list[dict[str, Any]] = [
         },
         "valid_phases": ["blue", "red", "green", "magenta"],
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read the contents of a file.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+        "valid_phases": ["blue", "red", "green", "magenta"],
+    },
 ]
 
 
