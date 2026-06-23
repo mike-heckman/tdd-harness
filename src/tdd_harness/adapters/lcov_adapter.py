@@ -4,8 +4,8 @@ Lcov adapter module.
 
 import subprocess
 
-from src.tdd_harness.adapters.base import CoverageAdapter
-from src.tdd_harness.models.tool import ToolCall, ToolCallResponse
+from ..models.tool import ToolCall, ToolCallResponse
+from .base import CoverageAdapter
 
 
 class LcovAdapter(CoverageAdapter):

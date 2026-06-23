@@ -6,8 +6,8 @@ import json
 
 from openai import AsyncOpenAI
 
-from src.tdd_harness.config import load_prompt_config
-from src.tdd_harness.context import Context, ContextBuilder, ContextType
+from .config import load_prompt_config
+from .context import Context, ContextBuilder, ContextType
 
 
 class LLMClient:

@@ -5,8 +5,8 @@ Ruff adapter module.
 import json
 import subprocess
 
-from src.tdd_harness.adapters.base import LintAdapter
-from src.tdd_harness.models.tool import ToolCall, ToolCallResponse
+from ..models.tool import ToolCall, ToolCallResponse
+from .base import LintAdapter
 
 
 class RuffAdapter(LintAdapter):

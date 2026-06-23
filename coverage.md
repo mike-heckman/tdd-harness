@@ -1,7 +1,7 @@
 # Test Coverage Report
 
-- **Date:** 2026-06-22 21:13:26
-- **Branch:** `task/0037`
+- **Date:** 2026-06-22 21:27:59
+- **Branch:** `task/0038`
 - **Status:** PASSED
 
 ### LCOV Aggregated
@@ -15,7 +15,7 @@
 | src/tdd_harness/adapters/pytest_adapter.py | 42 | 36 | 85.71% | 36-37, 51, 66-68 |
 | src/tdd_harness/adapters/ruff_adapter.py | 29 | 26 | 89.66% | 32, 53-54 |
 | src/tdd_harness/cli.py                   | 112 | 107 | 95.54% | 117-118, 137, 166, 224 |
-| src/tdd_harness/config.py                | 84 | 72 | 85.71% | 91, 113, 129, 137-144, 162 |
+| src/tdd_harness/config.py                | 82 | 70 | 85.37% | 89, 111, 127, 135-142, 160 |
 | src/tdd_harness/context.py               | 68 | 65 | 95.59% | 56, 135-136 |
 | src/tdd_harness/controller.py            | 526 | 447 | 84.98% | 117, 139-142, 169-170, 199, 229, 261, 270-273, 276-280, 282-283, 290, 315-318, 320-321, 345, 351, 360-361, 388, 393, 395, 398, 434, 439-440, 472-477, 488, 509-510, 521-522, 555-556, 572-573, 584-585, 629, 645-646, 656, 683, 685-691, 697-698, 724, 738, 758, 767, 789-790, 795, 803-804 |
 | src/tdd_harness/coverage_parser.py       | 53 | 50 | 94.34% | 50, 53-54 |
@@ -34,7 +34,7 @@
 | src/tdd_harness/tool_schemas.py          | 4 | 4 | 100.00% |  |
 | src/tdd_harness/tracker.py               | 42 | 40 | 95.24% | 87, 107 |
 | src/tdd_harness/utils.py                 | 36 | 35 | 97.22% | 30 |
-| tests/conftest.py                        | 7 | 7 | 100.00% |  |
+| tests/conftest.py                        | 12 | 12 | 100.00% |  |
 | tests/test_cli.py                        | 213 | 211 | 99.06% | 89-90 |
 | tests/test_config.py                     | 40 | 40 | 100.00% |  |
 | tests/test_context.py                    | 23 | 23 | 100.00% |  |
@@ -53,5 +53,5 @@
 | tests/test_task_loader.py                | 106 | 105 | 99.06% | 56 |
 | tests/test_tracker.py                    | 58 | 58 | 100.00% |  |
 | tests/test_utils.py                      | 54 | 54 | 100.00% |  |
-| **LCOV Aggregated Language Counts** | 3499 | 3339 | 95.43% | |
+| **LCOV Aggregated Language Counts** | 3502 | 3342 | 95.43% | |
 

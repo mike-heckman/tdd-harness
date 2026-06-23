@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections import Counter, deque
 
-from src.tdd_harness.models.tool import ToolCall, ToolCallResponse
+from .models.tool import ToolCall, ToolCallResponse
 
 
 class AntiThrashingTracker:

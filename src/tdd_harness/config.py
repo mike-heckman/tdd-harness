@@ -2,7 +2,6 @@
 Configuration loader and validator for tdd-harness.
 """
 
-import sys
 from pathlib import Path
 from uuid import uuid4
 
@@ -51,8 +50,7 @@ class HarnessContext:
         """
         Initialize the context.
         """
-        prefix = "test-" if "pytest" in sys.modules else ""
-        self.session_id = session_id or f"{prefix}{uuid4()}"
+        self.session_id = session_id or str(uuid4())
         self.project_dir = project_dir or Path.cwd()
 
     @property

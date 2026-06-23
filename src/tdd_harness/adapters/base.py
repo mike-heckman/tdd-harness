@@ -4,7 +4,7 @@ Base adapter module.
 
 from abc import ABC, abstractmethod
 
-from src.tdd_harness.models.tool import ToolCall, ToolCallResponse
+from ..models.tool import ToolCall, ToolCallResponse
 
 
 class Adapter(ABC):

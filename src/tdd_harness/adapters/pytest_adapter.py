@@ -6,9 +6,9 @@ import json
 import subprocess
 from pathlib import Path
 
-from src.tdd_harness.adapters.base import TestAdapter
-from src.tdd_harness.config import HarnessContext
-from src.tdd_harness.models.tool import ToolCall, ToolCallResponse
+from ..config import HarnessContext
+from ..models.tool import ToolCall, ToolCallResponse
+from .base import TestAdapter
 
 
 class PytestAdapter(TestAdapter):
