@@ -7,6 +7,8 @@ from collections.abc import Callable
 from enum import Enum
 from typing import Any, Protocol
 
+from .protocols import TrackerProtocol
+
 
 class ToolType(Enum):
     """
@@ -86,7 +88,7 @@ class ToolRegistry:
     def __init__(
         self,
         mcp_client: MCPClientProtocol | None = None,
-        tracker: object | None = None,
+        tracker: TrackerProtocol | None = None,
         tool_configs: dict[str, Any] | None = None,
     ):
         """
@@ -226,7 +228,7 @@ class ToolRegistry:
 
         previous_failures = 0
         if self.tracker and hasattr(self.tracker, "get_previous_failures"):
-            previous_failures = self.tracker.get_previous_failures(name)  # type: ignore
+            previous_failures = self.tracker.get_previous_failures(name)
 
         try:
             if tool.type == ToolType.MCP and self.mcp_client:

@@ -5,9 +5,12 @@ LLM Client implementation.
 import json
 
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionMessage
 
 from .config import load_prompt_config
 from .context import Context, ContextBuilder, ContextType
+from .protocols import ConfigLoaderProtocol
+from .registry import ToolRegistry
 
 
 class LLMClient:
@@ -15,9 +18,7 @@ class LLMClient:
     Client for communicating with the configured LLM API.
     """
 
-    def __init__(
-        self, config_loader: object, prompt: object, context_builder: ContextBuilder
-    ):  # Reason: Avoid circular imports and complex mock typings
+    def __init__(self, config_loader: ConfigLoaderProtocol, prompt: object, context_builder: ContextBuilder):
         """
         Initializes the LLMClient.
 
@@ -29,27 +30,35 @@ class LLMClient:
         self.config_loader = config_loader
         self.prompt = prompt
         self.context_builder = context_builder
-        self.config = config_loader.get_config()  # type: ignore
+        self.config = config_loader.get_config()
         self.llm_config = self.config.llm
 
         # Check/fetch configuration values
-        self.client = AsyncOpenAI(api_key=self.llm_config.get("api_key"), base_url=self.llm_config.get("base_url"))  # type: ignore
+        api_key_val = self.llm_config.get("api_key")
+        base_url_val = self.llm_config.get("base_url")
+        self.client = AsyncOpenAI(
+            api_key=str(api_key_val) if api_key_val else None, base_url=str(base_url_val) if base_url_val else None
+        )
         errors: list = []
-        self._model = self.llm_config.get("model", None)
-        if not self._model:
+        model_val = self.llm_config.get("model")
+        if not model_val:
             errors.append("Model not specified in LLM configuration")
+        self._model: str = str(model_val) if model_val else ""
 
-        self._context_size = self.llm_config.get("context_size", None)
-        if not self._context_size:
+        ctx_val = self.llm_config.get("context_size")
+        if not ctx_val:
             errors.append("Context size not specified in LLM configuration")
+        self._context_size: int = int(str(ctx_val)) if ctx_val else 0
 
-        self._minimum_available_context = self.llm_config.get("minimum_available_context", None)
-        if not self._minimum_available_context:
+        min_ctx_val = self.llm_config.get("minimum_available_context")
+        if not min_ctx_val:
             errors.append("Minimum available context not specified in LLM configuration")
+        self._minimum_available_context: int = int(str(min_ctx_val)) if min_ctx_val else 0
 
-        self._keep_turns = self.llm_config.get("keep_turns", None)
-        if not self._keep_turns:
+        keep_turns_val = self.llm_config.get("keep_turns")
+        if not keep_turns_val:
             errors.append("Keep turns not specified in LLM configuration")
+        self._keep_turns: int = int(str(keep_turns_val)) if keep_turns_val else 0
 
         if errors:
             raise ValueError("\n".join(errors))
@@ -83,12 +92,16 @@ class LLMClient:
         self.context_builder.replace_with_summary(context_ids, summary_ctx.text)
 
     async def _handle_tool_calls(
-        self, msg: object, messages: list[dict], current_turn: list[Context], registry: object | None
+        self,
+        msg: ChatCompletionMessage,
+        messages: list[dict],
+        current_turn: list[Context],
+        registry: ToolRegistry | None,
     ) -> None:
         """
         Executes requested tool calls and appends the results to the conversation.
         """
-        msg_dict = msg.model_dump(exclude_none=True)  # type: ignore
+        msg_dict = msg.model_dump(exclude_none=True)
         messages.append(msg_dict)
 
         metadata = {}
@@ -103,7 +116,7 @@ class LLMClient:
         )
         current_turn.append(assistant_ctx)
 
-        for tool_call in tool_calls:  # type: ignore
+        for tool_call in tool_calls:
             func = tool_call.function
             name = str(func.name)
             args = json.loads(func.arguments)
@@ -111,7 +124,7 @@ class LLMClient:
             content = "Tool executed."
             if registry:
                 try:
-                    res = await registry.dispatch(name, args)  # type: ignore
+                    res = await registry.dispatch(name, args)
                     content = str(res.content) if res.success else f"Error: {res.error}"
                 except Exception as e:
                     content = f"Error executing tool: {e}"
@@ -127,7 +140,7 @@ class LLMClient:
             current_turn.append(tool_ctx)
 
     async def chat(
-        self, contexts: list[Context], tools: list[dict] | None = None, registry: object | None = None
+        self, contexts: list[Context], tools: list[dict] | None = None, registry: ToolRegistry | None = None
     ) -> str | None:  # Reason: Could return None on error
         """
         Sends messages to the LLM, handling context compression, tool calls, and baseline caching.

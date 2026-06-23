@@ -29,6 +29,12 @@ class TddHarnessConfig(BaseModel):
     extensions: list[dict[str, object]] = Field(default_factory=list)
     tool_configs: dict[str, ToolConfigFile] = Field(default_factory=dict)
 
+    def get_config(self) -> "TddHarnessConfig":
+        """
+        Return self to satisfy ConfigLoaderProtocol.
+        """
+        return self
+
 
 class PromptConfig(BaseModel):
     """
