@@ -41,6 +41,7 @@ coverage/
 .tdd-state-default.json
 .stop-worker
 .coverage
+coverage.lcov
 .prompt-cache.yaml
 
 # Virtual Environments
