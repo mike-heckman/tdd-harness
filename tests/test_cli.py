@@ -134,6 +134,48 @@ def test_main_missing_config(capsys: pytest.CaptureFixture) -> None:
         assert "run 'tdd-harness init'" in captured.out
 
 
+def test_main_harness_abort(capsys: pytest.CaptureFixture):
+    """Test main catches HarnessAbort."""
+    from src.tdd_harness.exceptions import HarnessAbort
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        (tmp_path / ".git").mkdir()
+        config_dir = tmp_path / ".tdd-harness"
+        config_dir.mkdir()
+
+        with patch("src.tdd_harness.cli.resolve_config_directory", return_value=config_dir):
+            with patch("subprocess.run", return_value=MagicMock(stdout="", stderr="", returncode=0)):
+                with patch("src.tdd_harness.cli.async_main") as mock_async_main:
+                    mock_async_main.side_effect = HarnessAbort("Abort reason")
+                    with pytest.raises(SystemExit) as exc_info:
+                        main()
+                    assert exc_info.value.code == 1
+                    captured = capsys.readouterr()
+                    assert "Abort reason" in captured.err
+
+
+def test_main_mcp_fatal_error(capsys: pytest.CaptureFixture):
+    """Test main catches MCPFatalError."""
+    from src.tdd_harness.exceptions import MCPFatalError
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        (tmp_path / ".git").mkdir()
+        config_dir = tmp_path / ".tdd-harness"
+        config_dir.mkdir()
+
+        with patch("src.tdd_harness.cli.resolve_config_directory", return_value=config_dir):
+            with patch("subprocess.run", return_value=MagicMock(stdout="", stderr="", returncode=0)):
+                with patch("src.tdd_harness.cli.async_main") as mock_async_main:
+                    mock_async_main.side_effect = MCPFatalError("Fatal error")
+                    with pytest.raises(SystemExit) as exc_info:
+                        main()
+                    assert exc_info.value.code == 1
+                    captured = capsys.readouterr()
+                    assert "Fatal error" in captured.err
+
+
 @pytest.mark.asyncio
 async def test_async_main_success():
     """Test async_main completes successfully."""

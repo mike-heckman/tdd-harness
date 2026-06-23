@@ -5,6 +5,7 @@ import pytest
 
 from src.tdd_harness.config import TddHarnessConfig
 from src.tdd_harness.controller import Phase, PhaseValidationError, TDDLoopController
+from src.tdd_harness.exceptions import HarnessAbort
 from src.tdd_harness.registry import ToolRegistry
 
 
@@ -477,7 +478,7 @@ async def test_execute_tool_thrashing_abort(controller):
 
     # Mock should_abort to return True
     with patch.object(controller.tracker, "should_abort", return_value=True):
-        with pytest.raises(SystemExit):
+        with pytest.raises(HarnessAbort):
             await controller.execute_tool("my_tool", {"arg": "val"})
 
 
@@ -533,7 +534,7 @@ async def test_run_magenta_loop_abort(mock_orchestrate, controller):
             with patch.object(controller.llm_client, "chat", new=mock_chat):
                 with patch.object(controller, "read_file_safe", return_value="print('dummy')"):
                     with patch.object(controller, "check_magenta_exit", side_effect=PhaseValidationError("Failed")):
-                        with pytest.raises(SystemExit):
+                        with pytest.raises(HarnessAbort):
                             await controller.run_magenta_loop()
 
 
@@ -591,7 +592,7 @@ def test_write_file_safe_success(controller, tmp_path):
 
 
 def test_abort(controller):
-    with pytest.raises(SystemExit):
+    with pytest.raises(HarnessAbort):
         controller.abort("testing abort")
 
 
