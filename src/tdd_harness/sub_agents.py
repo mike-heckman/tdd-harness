@@ -2,10 +2,10 @@
 Sub-agents for TDD Harness.
 """
 
-from src.tdd_harness.context import Context, ContextType
-from src.tdd_harness.llm import LLMClient
-from src.tdd_harness.prompt import Prompt
-from src.tdd_harness.registry import ToolRegistry
+from .context import Context, ContextType
+from .llm import LLMClient
+from .prompt import Prompt
+from .registry import ToolRegistry
 
 
 class ReviewSubAgent:
