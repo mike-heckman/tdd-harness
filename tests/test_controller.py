@@ -397,7 +397,7 @@ async def test_success_reject(mock_check_green, mock_lint, controller, tmp_path)
 @patch("subprocess.check_call")
 def test_install_dependencies(mock_call, controller):
     res = controller.install_dependencies(["testpkg"])
-    mock_call.assert_called_once()
+    mock_call.assert_called_once_with(["uv", "pip", "install", "testpkg"])
     assert "Successfully installed" in res
 
 
@@ -407,6 +407,7 @@ def test_install_dependencies_fail(mock_call, controller):
 
     mock_call.side_effect = subprocess.CalledProcessError(1, "cmd")
     res = controller.install_dependencies(["testpkg"])
+    mock_call.assert_called_once_with(["uv", "pip", "install", "testpkg"])
     assert "Failed to install dependencies" in res
 
 

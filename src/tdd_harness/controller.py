@@ -9,7 +9,6 @@ import json
 import logging
 import shutil
 import subprocess
-import sys
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -452,7 +451,7 @@ class TDDLoopController:
         Installs the missing dependencies into the virtual environment.
         """
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", *packages])
+            subprocess.check_call(["uv", "pip", "install", *packages])
             return f"Successfully installed: {', '.join(packages)}"
         except subprocess.CalledProcessError as e:
             return f"Failed to install dependencies: {e}"
