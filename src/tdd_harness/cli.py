@@ -11,7 +11,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .config import HarnessContext, TddHarnessConfig, load_tdd_harness_config, resolve_config_directory
+from .config import HarnessContext, load_tdd_harness_config, resolve_config_directory
 from .context import ContextBuilder
 from .controller import TDDLoopController
 from .exceptions import HarnessAbort, MCPFatalError
@@ -158,17 +158,10 @@ async def async_main(config_dir: Path, phase: str | None = None):
     registry = ToolRegistry(mcp_client=mcp_client)
     await registry.initialize()
 
-    class _ConfigLoaderWrapper:
-        def __init__(self, cfg: TddHarnessConfig) -> None:
-            self.cfg = cfg
-
-        def get_config(self) -> TddHarnessConfig:
-            return self.cfg
-
     harness_ctx = HarnessContext()
     context_builder = ContextBuilder()
 
-    llm_client = LLMClient(_ConfigLoaderWrapper(config), Prompt("system_message"), context_builder)
+    llm_client = LLMClient(config, Prompt("system_message"), context_builder)
 
     controller = TDDLoopController(config, registry, llm_client, harness_ctx, context_builder)
 
