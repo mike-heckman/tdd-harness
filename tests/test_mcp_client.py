@@ -211,3 +211,24 @@ async def test_handle_failure_masks_secrets(mock_print, mock_stdio_client, mock_
     assert "supersecretkey123" not in printed_msg
     assert "***" in printed_msg
     assert "SAFE_VAR=hello" in printed_msg
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager_calls_close():
+    """Test that __aexit__ calls close() upon normal exit."""
+    client = MCPClient({})
+    with patch.object(client, "close", new_callable=AsyncMock) as mock_close:
+        async with client:
+            pass
+        mock_close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager_calls_close_on_exception():
+    """Test that __aexit__ calls close() even when an exception occurs."""
+    client = MCPClient({})
+    with patch.object(client, "close", new_callable=AsyncMock) as mock_close:
+        with pytest.raises(ValueError, match="Test exception"):
+            async with client:
+                raise ValueError("Test exception")
+        mock_close.assert_awaited_once()

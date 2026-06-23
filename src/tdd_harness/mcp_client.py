@@ -5,6 +5,7 @@ Client for interacting with Model Context Protocol servers.
 import asyncio
 import sys
 from contextlib import AsyncExitStack
+from types import TracebackType
 from typing import Any
 
 from mcp import ClientSession
@@ -37,6 +38,23 @@ class MCPClient:
         """
         await self.exit_stack.aclose()
         self.session = None
+
+    async def __aenter__(self) -> "MCPClient":
+        """
+        Enter the async context manager.
+        """
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        """
+        Exit the async context manager and cleanup.
+        """
+        await self.close()
 
     async def handle_failure(self, error: Exception) -> None:
         """

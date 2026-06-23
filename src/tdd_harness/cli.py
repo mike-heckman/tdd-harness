@@ -155,62 +155,64 @@ async def async_main(config_dir: Path, phase: str | None = None):
     """
     config = load_tdd_harness_config(config_dir)
     mcp_client = MCPClient(server_config={})
-    registry = ToolRegistry(mcp_client=mcp_client)
-    await registry.initialize()
 
-    harness_ctx = HarnessContext()
-    context_builder = ContextBuilder()
+    async with mcp_client:
+        registry = ToolRegistry(mcp_client=mcp_client)
+        await registry.initialize()
 
-    llm_client = LLMClient(config, Prompt("system_message"), context_builder)
+        harness_ctx = HarnessContext()
+        context_builder = ContextBuilder()
 
-    controller = TDDLoopController(config, registry, llm_client, harness_ctx, context_builder)
+        llm_client = LLMClient(config, Prompt("system_message"), context_builder)
 
-    print("Running Amber pre-flight validation...")
-    if not controller.pre_flight_validation():
-        print("Error: Amber pre-flight validation failed. Please fix issues before proceeding.")
-        sys.exit(1)
+        controller = TDDLoopController(config, registry, llm_client, harness_ctx, context_builder)
 
-    print("Amber phase complete. System is ready.")
+        print("Running Amber pre-flight validation...")
+        if not controller.pre_flight_validation():
+            print("Error: Amber pre-flight validation failed. Please fix issues before proceeding.")
+            sys.exit(1)
 
-    try:
-        await registry.dispatch("index_repo", {})
-        await registry.dispatch("doc_index_repo", {})
-    except ValueError:
-        pass
+        print("Amber phase complete. System is ready.")
 
-    ready_dir = Path("docs/tasks/ready")
-    task_file = None
-    if ready_dir.exists():
-        tasks = sorted(ready_dir.glob("*.md"))
-        if tasks:
-            task_file = tasks[0]
+        try:
+            await registry.dispatch("index_repo", {})
+            await registry.dispatch("doc_index_repo", {})
+        except ValueError:
+            pass
 
-    if not task_file:
-        print("Error: No task files found in docs/tasks/ready/")
-        sys.exit(1)
+        ready_dir = Path("docs/tasks/ready")
+        task_file = None
+        if ready_dir.exists():
+            tasks = sorted(ready_dir.glob("*.md"))
+            if tasks:
+                task_file = tasks[0]
 
-    print(f"Active task file: {task_file}")
+        if not task_file:
+            print("Error: No task files found in docs/tasks/ready/")
+            sys.exit(1)
 
-    start_phase = phase or "blue"
+        print(f"Active task file: {task_file}")
 
-    if start_phase == "blue":
-        print("Transitioning to Blue phase (Structural Blueprint)...")
-        await controller.run_blue_phase(task_file)
+        start_phase = phase or "blue"
 
-        print("Transitioning to Red phase (Test Generation)...")
-        await controller.run_red_phase(task_file)
+        if start_phase == "blue":
+            print("Transitioning to Blue phase (Structural Blueprint)...")
+            await controller.run_blue_phase(task_file)
 
-    print("Transitioning to Green phase (Implementation)...")
-    await controller.run_green_phase(task_file)
+            print("Transitioning to Red phase (Test Generation)...")
+            await controller.run_red_phase(task_file)
 
-    print("Transitioning to Magenta phase (Coverage Guardrail)...")
-    await controller.run_magenta_loop()
+        print("Transitioning to Green phase (Implementation)...")
+        await controller.run_green_phase(task_file)
 
-    done_dir = Path("docs/tasks/done")
-    done_dir.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(task_file), str(done_dir / task_file.name))
+        print("Transitioning to Magenta phase (Coverage Guardrail)...")
+        await controller.run_magenta_loop()
 
-    print("TDD Loop execution complete.")
+        done_dir = Path("docs/tasks/done")
+        done_dir.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(task_file), str(done_dir / task_file.name))
+
+        print("TDD Loop execution complete.")
 
 
 if __name__ == "__main__":
