@@ -19,6 +19,7 @@ import yaml
 from .config import HarnessContext, TddHarnessConfig
 from .context import Context, ContextBuilder, ContextType
 from .coverage_parser import LcovParser
+from .exceptions import HarnessAbort
 from .llm import LLMClient
 from .models.tool import ToolCall, ToolCallResponse
 from .prompt import Prompt
@@ -259,7 +260,7 @@ class TDDLoopController:
         report_file = report_dir / f"abort_report_{self.current_phase.name.lower()}_{self.session_id}.md"
         with open(report_file, "w") as f:
             f.write(f"Abort Reason: {reason}\\n")
-        sys.exit(1)
+        raise HarnessAbort(reason)
 
     async def _generate_post_mortem(self, filepath: str, raw_error: str) -> str:
         """

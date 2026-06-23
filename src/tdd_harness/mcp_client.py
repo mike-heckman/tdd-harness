@@ -10,6 +10,8 @@ from typing import Any
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
+from .exceptions import MCPFatalError
+
 
 class MCPClient:
     """
@@ -50,7 +52,7 @@ class MCPClient:
 
         if self.restart_policy == "exit":
             print(f"MCP server failure (policy='exit'): {error_msg}", file=sys.stderr)
-            sys.exit(1)
+            raise MCPFatalError(error_msg)
         elif self.restart_policy == "on-failure":
             if self._retry_count < 1:
                 self._retry_count += 1

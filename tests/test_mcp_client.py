@@ -8,6 +8,7 @@ import pytest
 from mcp.client.session import ClientSession
 from mcp.types import CallToolResult
 
+from src.tdd_harness.exceptions import MCPFatalError
 from src.tdd_harness.mcp_client import MCPClient
 
 
@@ -113,9 +114,8 @@ async def test_call_tool_failure(mock_stdio_client, mock_client_session):
 
 
 @pytest.mark.asyncio
-@patch("src.tdd_harness.mcp_client.sys.exit")
 @patch("src.tdd_harness.mcp_client.print")
-async def test_handle_failure_exit_policy(mock_print, mock_exit, mock_stdio_client, mock_client_session):
+async def test_handle_failure_exit_policy(mock_print, mock_stdio_client, mock_client_session):
     """Test failure with exit policy terminates process."""
     config = {"command": "echo", "args": ["hello"], "restart_policy": "exit"}
     client = MCPClient(config)
@@ -123,9 +123,9 @@ async def test_handle_failure_exit_policy(mock_print, mock_exit, mock_stdio_clie
     # Make initialize fail
     mock_client_session.initialize.side_effect = Exception("Test error")
 
-    await client.connect()
+    with pytest.raises(MCPFatalError):
+        await client.connect()
 
-    mock_exit.assert_called_once_with(1)
     mock_print.assert_called_once()
 
 
@@ -188,9 +188,8 @@ async def test_handle_failure_always_policy(mock_sleep, mock_stdio_client, mock_
 
 
 @pytest.mark.asyncio
-@patch("src.tdd_harness.mcp_client.sys.exit")
 @patch("src.tdd_harness.mcp_client.print")
-async def test_handle_failure_masks_secrets(mock_print, mock_exit, mock_stdio_client, mock_client_session):
+async def test_handle_failure_masks_secrets(mock_print, mock_stdio_client, mock_client_session):
     """Test that API keys in env are redacted from error messages."""
     config = {
         "command": "echo",
@@ -203,9 +202,9 @@ async def test_handle_failure_masks_secrets(mock_print, mock_exit, mock_stdio_cl
     # Force an error containing the secret
     mock_client_session.initialize.side_effect = Exception("Command failed with supersecretkey123 and SAFE_VAR=hello")
 
-    await client.connect()
+    with pytest.raises(MCPFatalError):
+        await client.connect()
 
-    mock_exit.assert_called_once_with(1)
     mock_print.assert_called_once()
 
     printed_msg = mock_print.call_args[0][0]

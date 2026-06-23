@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from .config import TddHarnessConfig, load_tdd_harness_config, resolve_config_directory
 from .controller import TDDLoopController
+from .exceptions import HarnessAbort, MCPFatalError
 from .llm import LLMClient
 from .mcp_client import MCPClient
 from .prompt import Prompt
@@ -140,7 +141,11 @@ def main():
     # Continue with the harness logic
     print("TDD Harness initialized successfully.")
 
-    asyncio.run(async_main(config_dir, args.phase))
+    try:
+        asyncio.run(async_main(config_dir, args.phase))
+    except (HarnessAbort, MCPFatalError) as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
 
 
 async def async_main(config_dir: Path, phase: str | None = None):
