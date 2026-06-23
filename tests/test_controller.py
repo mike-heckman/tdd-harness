@@ -4,8 +4,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.tdd_harness.config import TddHarnessConfig
-from src.tdd_harness.controller import Phase, PhaseValidationError, TDDLoopController
-from src.tdd_harness.exceptions import HarnessAbort
+from src.tdd_harness.controller import TDDLoopController
+from src.tdd_harness.exceptions import HarnessAbort, PhaseValidationError
+from src.tdd_harness.phase import Phase
 from src.tdd_harness.registry import ToolRegistry
 
 
@@ -47,38 +48,7 @@ def controller(config):
         return TDDLoopController(config, registry, mock_llm_client)
 
 
-def test_is_path_allowed_global_lockdown(controller):
-    # Cannot write to .tdd-harness
-    assert not controller._is_path_allowed(".tdd-harness/config.yaml", is_write=True)
-    # Can read from .tdd-harness (if it exists, though typically restricted elsewhere, global rule only restricts writes)
-    assert controller._is_path_allowed(".tdd-harness/config.yaml", is_write=False)
-
-    # Cannot write to src/tdd_harness/
-    assert not controller._is_path_allowed("src/tdd_harness/runner.py", is_write=True)
-
-    # Case-insensitivity checks
-    assert not controller._is_path_allowed(".TDD-HARNESS/config.yaml", is_write=True)
-    assert not controller._is_path_allowed("SRC/TDD_HARNESS/runner.py", is_write=True)
-
-    # .git lockdown
-    assert not controller._is_path_allowed(".git/config", is_write=True)
-
-
-def test_is_path_allowed_phase_constraints(controller):
-    # AMBER phase: src is rw, test is ro
-    controller.current_phase = Phase.AMBER
-    assert controller._is_path_allowed("src/app/main.py", is_write=True)
-    assert not controller._is_path_allowed("tests/test_main.py", is_write=True)
-    assert controller._is_path_allowed("tests/test_main.py", is_write=False)
-
-    # RED phase: src is ro, test is rw
-    controller.current_phase = Phase.RED
-    assert not controller._is_path_allowed("src/app/main.py", is_write=True)
-    assert controller._is_path_allowed("src/app/main.py", is_write=False)
-    assert controller._is_path_allowed("tests/test_main.py", is_write=True)
-
-
-@patch("src.tdd_harness.controller.TDDLoopController._process_ready_tasks")
+@patch("src.tdd_harness.task_loader.TaskLoader.process_ready_tasks")
 @patch("src.tdd_harness.controller.run_lint")
 @patch("src.tdd_harness.controller.run_test_and_coverage")
 def test_pre_flight_validation(mock_test_cov, mock_lint, mock_tasks, controller):
@@ -279,7 +249,7 @@ async def test_run_green_phase_post_mortem_injection(controller, tmp_path):
 @patch("src.tdd_harness.controller.run_lint")
 @patch("src.tdd_harness.controller.orchestrate_targeted")
 @patch("src.tdd_harness.controller.TDDLoopController._generate_post_mortem")
-@patch("src.tdd_harness.controller.TDDLoopController._is_path_allowed", return_value=True)
+@patch("src.tdd_harness.security.SecurityInterceptor.is_path_allowed", return_value=True)
 async def test_stage_implementation_success(
     mock_is_path_allowed, mock_post_mortem, mock_orch, mock_lint, controller, tmp_path
 ):
@@ -300,7 +270,7 @@ async def test_stage_implementation_success(
 @patch("src.tdd_harness.controller.run_lint")
 @patch("src.tdd_harness.controller.orchestrate_targeted")
 @patch("src.tdd_harness.controller.TDDLoopController._generate_post_mortem")
-@patch("src.tdd_harness.controller.TDDLoopController._is_path_allowed", return_value=True)
+@patch("src.tdd_harness.security.SecurityInterceptor.is_path_allowed", return_value=True)
 async def test_stage_implementation_lint_failure(
     mock_is_path_allowed, mock_post_mortem, mock_orch, mock_lint, controller, tmp_path
 ):
@@ -322,7 +292,7 @@ async def test_stage_implementation_lint_failure(
 
 @pytest.mark.asyncio
 @patch("src.tdd_harness.controller.run_lint")
-@patch("src.tdd_harness.controller.TDDLoopController._is_path_allowed", return_value=True)
+@patch("src.tdd_harness.security.SecurityInterceptor.is_path_allowed", return_value=True)
 async def test_stage_implementation_crash_safe(mock_is_path_allowed, mock_lint, controller, tmp_path):
     controller.current_phase = Phase.BLUE
     test_file = tmp_path / "test_file.py"
@@ -342,7 +312,7 @@ async def test_stage_implementation_crash_safe(mock_is_path_allowed, mock_lint, 
 @patch("src.tdd_harness.controller.run_lint")
 @patch("src.tdd_harness.controller.orchestrate_targeted")
 @patch("src.tdd_harness.controller.TDDLoopController._generate_post_mortem")
-@patch("src.tdd_harness.controller.TDDLoopController._is_path_allowed", return_value=True)
+@patch("src.tdd_harness.security.SecurityInterceptor.is_path_allowed", return_value=True)
 async def test_stage_test_implementation_expected_error(
     mock_is_path_allowed, mock_post_mortem, mock_orch, mock_lint, controller, tmp_path
 ):
@@ -392,82 +362,6 @@ async def test_success_reject(mock_check_green, mock_lint, controller, tmp_path)
     result = await controller.success("Implement feature", task_file=None)
     assert "Validation failed: Review Sub-Agent Rejected the implementation" in result
     assert "REJECT: Missing edge cases." in result
-
-
-@patch("subprocess.check_call")
-def test_install_dependencies(mock_call, controller):
-    res = controller.install_dependencies(["testpkg"])
-    mock_call.assert_called_once_with(["uv", "pip", "install", "testpkg"])
-    assert "Successfully installed" in res
-
-
-@patch("subprocess.check_call")
-def test_install_dependencies_fail(mock_call, controller):
-    import subprocess
-
-    mock_call.side_effect = subprocess.CalledProcessError(1, "cmd")
-    res = controller.install_dependencies(["testpkg"])
-    mock_call.assert_called_once_with(["uv", "pip", "install", "testpkg"])
-    assert "Failed to install dependencies" in res
-
-
-def test_validate_and_provision_task_missing_frontmatter(controller, tmp_path):
-    task_file = tmp_path / "0001-task.md"
-    task_file.write_text("No frontmatter")
-    with pytest.raises(PhaseValidationError, match="Missing YAML frontmatter"):
-        controller._validate_and_provision_task(task_file)
-
-
-def test_validate_and_provision_task_valid(controller, tmp_path):
-    task_file = tmp_path / "0002-task.md"
-    task_file.write_text("""---
-id: "123"
-title: "Test"
-success_criteria: []
-dependencies:
-  prod: []
-  dev: []
----
-## Context
-Testing
-""")
-    # Shouldn't raise
-    with patch.object(controller, "install_dependencies") as mock_install:
-        controller._validate_and_provision_task(task_file)
-        mock_install.assert_not_called()
-
-
-def test_process_ready_tasks_moves_error(controller, tmp_path):
-    # Setup ready and error dirs
-    with patch("src.tdd_harness.controller.Path") as mock_path_cls:
-        mock_ready = MagicMock()
-        mock_error = MagicMock()
-
-        def path_side_effect(arg):
-            if str(arg) == "docs/tasks/ready":
-                return mock_ready
-            if str(arg) == "docs/tasks/error":
-                return mock_error
-            return Path(arg)
-
-        mock_path_cls.side_effect = path_side_effect
-        mock_ready.exists.return_value = True
-
-        # mock a task
-        mock_task = MagicMock()
-        mock_task.name = "0001-test.md"
-        mock_task.stem = "0001-test"
-        mock_ready.glob.return_value = [mock_task]
-
-        with patch.object(controller, "_validate_and_provision_task") as mock_validate:
-            with patch("src.tdd_harness.controller.shutil.move") as mock_move:
-                with patch("src.tdd_harness.controller.open") as mock_open:
-                    mock_validate.side_effect = PhaseValidationError("Failed")
-                    res = controller._process_ready_tasks()
-                    assert res is False
-                    mock_move.assert_called_once()
-                    mock_open.assert_called_once()
-                    mock_open.return_value.__enter__.return_value.write.assert_called_once_with("Failed")
 
 
 @pytest.mark.asyncio
@@ -539,59 +433,6 @@ async def test_run_magenta_loop_abort(mock_orchestrate, controller):
                             await controller.run_magenta_loop()
 
 
-def test_is_path_allowed_outside_workspace(controller, tmp_path):
-    # Path outside workspace
-    outside = tmp_path.parent / "outside.txt"
-    assert not controller._is_path_allowed(str(outside), is_write=False)
-
-
-def test_is_path_allowed_empty_parts(controller, tmp_path):
-    # Path is same as cwd
-    from pathlib import Path
-
-    cwd = Path.cwd().resolve()
-    assert controller._is_path_allowed(str(cwd), is_write=False)
-
-
-def test_is_path_allowed_phase_specific(controller):
-    # RED phase: src is ro, test is rw
-    controller.current_phase = Phase.RED
-    assert not controller._is_path_allowed("src/app.py", is_write=True)
-
-    # GREEN phase: src is rw, test is ro
-    controller.current_phase = Phase.GREEN
-    assert not controller._is_path_allowed("tests/test_app.py", is_write=True)
-
-
-def test_read_file_safe_denied(controller):
-    controller.current_phase = Phase.RED
-    with pytest.raises(Exception, match="Read access"):
-        # Let's mock _is_path_allowed to return False
-        with patch.object(controller, "_is_path_allowed", return_value=False):
-            controller.read_file_safe("some_file.py")
-
-
-def test_read_file_safe_success(controller, tmp_path):
-    f = tmp_path / "test.txt"
-    f.write_text("hello")
-    with patch.object(controller, "_is_path_allowed", return_value=True):
-        assert controller.read_file_safe(str(f)) == "hello"
-
-
-def test_write_file_safe_denied(controller):
-    with pytest.raises(Exception, match="Write access"):
-        with patch.object(controller, "_is_path_allowed", return_value=False):
-            controller.write_file_safe("some_file.py", "content")
-
-
-def test_write_file_safe_success(controller, tmp_path):
-    f = tmp_path / "test.txt"
-    with patch.object(controller, "_is_path_allowed", return_value=True):
-        res = controller.write_file_safe(str(f), "hello")
-        assert "Successfully wrote to" in res
-        assert f.read_text() == "hello"
-
-
 def test_abort(controller):
     with pytest.raises(HarnessAbort):
         controller.abort("testing abort")
@@ -650,7 +491,7 @@ async def test_success_with_diffs(mock_check_green, mock_lint, controller, tmp_p
 @patch("src.tdd_harness.controller.run_lint")
 @patch("src.tdd_harness.controller.orchestrate_targeted")
 @patch("src.tdd_harness.controller.TDDLoopController._generate_post_mortem")
-@patch("src.tdd_harness.controller.TDDLoopController._is_path_allowed", return_value=True)
+@patch("src.tdd_harness.security.SecurityInterceptor.is_path_allowed", return_value=True)
 async def test_stage_test_implementation_wrong_error(
     mock_is_path_allowed, mock_post_mortem, mock_orch, mock_lint, controller, tmp_path
 ):
@@ -671,22 +512,6 @@ async def test_ask_researcher(controller):
     controller.research_agent.ask = AsyncMock(return_value="Researched")
     res = await controller.ask_researcher("q")
     assert res == "Researched"
-
-
-def test_search_web_no_module(controller):
-    import sys
-
-    with patch.dict(sys.modules, {"duckduckgo_search": None}):
-        res = controller.search_web("query")
-        assert "duckduckgo-search not installed" in res
-
-
-def test_download_to_reference_no_module(controller):
-    import sys
-
-    with patch.dict(sys.modules, {"requests": None}):
-        res = controller.download_to_reference("url", "lib", "file")
-        assert "Missing requests" in res
 
 
 @pytest.mark.asyncio
@@ -717,7 +542,7 @@ async def test_stage_test_implementation_wrong_phase(controller):
 
 @pytest.mark.asyncio
 @patch("src.tdd_harness.controller.run_lint")
-@patch("src.tdd_harness.controller.TDDLoopController._is_path_allowed", return_value=True)
+@patch("src.tdd_harness.security.SecurityInterceptor.is_path_allowed", return_value=True)
 async def test_stage_test_implementation_crash_safe(mock_is_path_allowed, mock_lint, controller, tmp_path):
     controller.current_phase = Phase.RED
     test_file = tmp_path / "test_file.py"
@@ -731,22 +556,6 @@ async def test_stage_test_implementation_crash_safe(mock_is_path_allowed, mock_l
 
     # Verify file was reverted
     assert test_file.read_text() == "print('hello')"
-
-
-def test_is_path_allowed_phase_specific_lower(controller):
-    # Test case-insensitive check
-    controller.current_phase = Phase.GREEN
-    assert not controller._is_path_allowed("TESTS/test_app.py", is_write=True)
-
-    controller.current_phase = Phase.RED
-    assert not controller._is_path_allowed("SRC/app.py", is_write=True)
-
-
-def test_is_path_allowed_global_lockdown_git(controller):
-    # Test .git lockdown
-    assert not controller._is_path_allowed(".GIT/config", is_write=True)
-    assert not controller._is_path_allowed(".git/HEAD", is_write=True)
-    assert controller._is_path_allowed(".git/config", is_write=False)
 
 
 @pytest.mark.asyncio

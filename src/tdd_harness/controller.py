@@ -2,14 +2,11 @@
 TDD Loop Controller Module.
 """
 
-import asyncio
 import difflib
 import hashlib
 import json
 import logging
 import shutil
-import subprocess
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -18,45 +15,21 @@ import yaml
 from .config import HarnessContext, TddHarnessConfig
 from .context import Context, ContextBuilder, ContextType
 from .coverage_parser import LcovParser
-from .exceptions import HarnessAbort
+from .exceptions import HarnessAbort, PhaseValidationError
 from .llm import LLMClient
 from .models.tool import ToolCall, ToolCallResponse
+from .phase import Phase
 from .prompt import Prompt
 from .registry import ToolRegistry
 from .runner import orchestrate_global, orchestrate_targeted, run_lint, run_test, run_test_and_coverage
+from .security import SecurityInterceptor
 from .sub_agents import PostMortemSubAgent, ResearchSubAgent, ReviewSubAgent
+from .task_loader import TaskLoader
 from .tool_schemas import get_tools_for_phase
 from .tracker import AntiThrashingTracker
+from .utils import download_to_reference, install_dependencies, search_web
 
 logger = logging.getLogger(__name__)
-
-
-class Phase(Enum):
-    """
-    Enum representing the TDD phases.
-    """
-
-    AMBER = "amber"
-    BLUE = "blue"
-    RED = "red"
-    GREEN = "green"
-    MAGENTA = "magenta"
-
-
-class SecurityError(Exception):
-    """
-    Raised when an operation violates a security boundary.
-    """
-
-    pass
-
-
-class PhaseValidationError(Exception):
-    """
-    Raised when phase exit validation fails.
-    """
-
-    pass
 
 
 class TDDLoopController:
@@ -69,7 +42,14 @@ class TDDLoopController:
     Responsibility Principle.
     """
 
-    def __init__(self, config: TddHarnessConfig, registry: ToolRegistry, llm_client: LLMClient):
+    def __init__(
+        self,
+        config: TddHarnessConfig,
+        registry: ToolRegistry,
+        llm_client: LLMClient,
+        security_interceptor: SecurityInterceptor | None = None,
+        task_loader: TaskLoader | None = None,
+    ):
         """
         Initialize the TDDLoopController.
         """
@@ -83,7 +63,8 @@ class TDDLoopController:
         self.tracker = AntiThrashingTracker(**at_config)
         self.registry.tracker = self.tracker
 
-        self.current_phase = Phase.AMBER
+        self._current_phase = Phase.AMBER
+
         self.harness_ctx = HarnessContext()
         self.session_id = self.harness_ctx.session_id
 
@@ -98,76 +79,45 @@ class TDDLoopController:
         self.research_agent = ResearchSubAgent(self.llm_client)
         self._post_mortem_cache: dict[str, str] = {}
 
+        self.security_interceptor = security_interceptor or SecurityInterceptor(initial_phase=self._current_phase)
+        self.task_loader = task_loader or TaskLoader(self.research_agent, self.registry)
+        self.security_interceptor.current_phase = self._current_phase
+
         # Register built-in file operations wrapped with security interceptors
-        self.registry.register_python_tool(self.read_file_safe, name="read_file")
-        self.registry.register_python_tool(self.write_file_safe, name="write_file")
+        self.registry.register_python_tool(self.security_interceptor.read_file_safe, name="read_file")
+        self.registry.register_python_tool(self.security_interceptor.write_file_safe, name="write_file")
         self.registry.register_python_tool(self.success, name="success")
         self.registry.register_python_tool(self.abort, name="abort")
         self.registry.register_python_tool(self.stage_implementation, name="stage_implementation")
         self.registry.register_python_tool(self.stage_test_implementation, name="stage_test_implementation")
         self.registry.register_python_tool(self.ask_researcher, name="ask_researcher")
-        self.registry.register_python_tool(self.install_dependencies, name="install_dependencies")
-        self.registry.register_python_tool(self.search_web, name="search_web")
-        self.registry.register_python_tool(self.download_to_reference, name="download_to_reference")
+        self.registry.register_python_tool(install_dependencies, name="install_dependencies")
+        self.registry.register_python_tool(search_web, name="search_web")
+        self.registry.register_python_tool(download_to_reference, name="download_to_reference")
 
-    def _is_path_allowed(self, path: str, is_write: bool) -> bool:
+    @property
+    def current_phase(self) -> Phase:
         """
-        Enforces global restrictions and phase-specific access rules.
+        Get the current phase.
         """
-        target = Path(path).resolve()
-        cwd = Path.cwd().resolve()
+        return self._current_phase
 
-        try:
-            rel_path = target.relative_to(cwd)
-        except ValueError:
-            return False  # Path is outside the workspace
-
-        parts = rel_path.parts
-        if not parts:
-            return True
-
-        # Global Lockdown
-        if is_write and parts:
-            p0 = parts[0].lower()
-            if p0 in (".tdd-harness", ".git"):
-                return False
-            if len(parts) >= 2 and p0 == "src" and parts[1].lower() == "tdd_harness":
-                return False
-
-        # Phase-specific Write constraints
-        if is_write and parts:
-            p0 = parts[0].lower()
-            if self.current_phase in (Phase.AMBER, Phase.BLUE, Phase.GREEN):
-                # src/: rw, test/: ro
-                if p0 == "tests":
-                    return False
-            elif self.current_phase in (Phase.RED, Phase.MAGENTA):
-                # src/: ro, test/: rw
-                if p0 == "src":
-                    return False
-
-        return True
+    @current_phase.setter
+    def current_phase(self, phase: Phase) -> None:
+        self._current_phase = phase
+        self.security_interceptor.current_phase = phase
 
     def read_file_safe(self, path: str) -> str:
         """
-        Safely read a file, respecting phase access rules.
+        Read a file safely based on the current phase.
         """
-        if not self._is_path_allowed(path, is_write=False):
-            raise SecurityError(f"Read access to {path} denied.")
-        with open(path, encoding="utf-8") as f:
-            return f.read()
+        return self.security_interceptor.read_file_safe(path)
 
     def write_file_safe(self, path: str, content: str) -> str:
         """
-        Safely write a file, respecting phase access rules.
+        Write a file safely based on the current phase.
         """
-        if not self._is_path_allowed(path, is_write=True):
-            raise SecurityError(f"Write access to {path} denied.")
-        # Ensure parent dirs exist
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return f"Successfully wrote to {path}"
+        return self.security_interceptor.write_file_safe(path, content)
 
     async def success(self, message: str, task_file: str | None = None) -> str:
         """
@@ -441,135 +391,10 @@ class TDDLoopController:
             if key.startswith("cov_") and val.get("status") != "success":
                 return False
 
-        if not self._process_ready_tasks():
+        if not self.task_loader.process_ready_tasks():
             return False
 
         return True
-
-    def install_dependencies(self, packages: list[str]) -> str:
-        """
-        Installs the missing dependencies into the virtual environment.
-        """
-        try:
-            subprocess.check_call(["uv", "pip", "install", *packages])
-            return f"Successfully installed: {', '.join(packages)}"
-        except subprocess.CalledProcessError as e:
-            return f"Failed to install dependencies: {e}"
-
-    def search_web(self, query: str) -> str:
-        """
-        Searches the web using duckduckgo-search.
-        """
-        try:
-            from duckduckgo_search import DDGS  # type: ignore
-
-            results = DDGS().text(query, max_results=5)
-            if results:
-                return "\\n".join([f"- [{r['title']}]({r['href']})" for r in results])
-            return "No results found."
-        except ImportError:
-            return "duckduckgo-search not installed"
-
-    def download_to_reference(self, url: str, library_name: str, filename: str) -> str:
-        """
-        Downloads a webpage, converts to markdown, and saves to docs/reference/{library_name}/{filename}.md.
-        """
-        try:
-            import requests  # type: ignore
-            from bs4 import BeautifulSoup  # type: ignore
-            from markdownify import markdownify  # type: ignore
-
-            resp = requests.get(url, timeout=10)
-            resp.raise_for_status()
-
-            soup = BeautifulSoup(resp.content, "html.parser")
-            md = markdownify(str(soup), heading_style="ATX")
-
-            target_dir = Path("docs") / "reference" / library_name
-            target_dir.mkdir(parents=True, exist_ok=True)
-            target_path = target_dir / f"{filename}.md"
-            with open(target_path, "w", encoding="utf-8") as f:
-                f.write(md)
-            return f"Successfully saved to {target_path}"
-        except ImportError:
-            return "Missing requests, beautifulsoup4, or markdownify"
-        except Exception as e:
-            return f"Error downloading: {e}"
-
-    def _process_ready_tasks(self) -> bool:
-        """
-        Validates tasks in docs/tasks/ready/ asciibetically.
-        """
-        ready_dir = Path("docs/tasks/ready")
-        error_dir = Path("docs/tasks/error")
-        if not ready_dir.exists():
-            return True
-
-        tasks = sorted(ready_dir.glob("*.md"))
-        for task_path in tasks:
-            try:
-                self._validate_and_provision_task(task_path)
-            except PhaseValidationError as e:
-                error_dir.mkdir(parents=True, exist_ok=True)
-                dest = error_dir / task_path.name
-                shutil.move(task_path, dest)
-                with open(error_dir / f"{task_path.stem}.error.log", "w", encoding="utf-8") as f:
-                    f.write(str(e))
-                return False
-
-        return True
-
-    def _validate_and_provision_task(self, task_path: Path) -> None:
-        content = task_path.read_text(encoding="utf-8")
-        if not content.startswith("---"):
-            raise PhaseValidationError("Missing YAML frontmatter.")
-
-        parts = content.split("---", 2)
-        if len(parts) < 3:
-            raise PhaseValidationError("Invalid YAML frontmatter format.")
-
-        try:
-            frontmatter = yaml.safe_load(parts[1])
-        except yaml.YAMLError as e:
-            raise PhaseValidationError(f"Invalid YAML parsing: {e}") from e
-
-        if not isinstance(frontmatter, dict):
-            raise PhaseValidationError("YAML frontmatter must be a dictionary.")
-
-        for field in ["id", "title", "success_criteria"]:
-            if field not in frontmatter:
-                raise PhaseValidationError(f"Missing required field in frontmatter: {field}")
-
-        if not isinstance(frontmatter.get("success_criteria"), list):
-            raise PhaseValidationError("success_criteria must be a list.")
-
-        if "## Context" not in parts[2]:
-            raise PhaseValidationError("Missing '## Context' Markdown header.")
-
-        deps_block = frontmatter.get("dependencies", {})
-        if isinstance(deps_block, dict):
-            all_deps = deps_block.get("prod", []) + deps_block.get("dev", [])
-            if all_deps:
-                res = self.install_dependencies(all_deps)
-                if "Failed" in res:
-                    raise PhaseValidationError(res)
-
-                # Setup a short asyncio loop to run the subagent if not running
-                async def run_cyan():
-                    # We group all libraries into one prompt
-                    libs_str = ", ".join(all_deps)
-                    prompt = f"Please search the web for external reference documentation for the following libraries: {libs_str}. Then, use download_to_reference to securely store them in ./docs/reference/<library_name>/."
-                    await self.ask_researcher(prompt)
-                    try:
-                        await self.registry.dispatch("index_folder", {"path": "docs/reference"})
-                    except Exception:
-                        pass
-
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(run_cyan())
-                except RuntimeError:
-                    asyncio.run(run_cyan())
 
     def check_red_exit(self) -> None:
         """
