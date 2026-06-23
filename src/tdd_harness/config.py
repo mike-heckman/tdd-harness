@@ -4,7 +4,6 @@ Configuration loader and validator for tdd-harness.
 
 import sys
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
 import yaml
@@ -42,23 +41,19 @@ class PromptConfig(BaseModel):
 
 class HarnessContext:
     """
-    Singleton for managing project context and temporary directory paths.
+    Project context and temporary directory paths.
     """
 
-    _instance = None
     session_id: str
     project_dir: Path
 
-    def __new__(cls, *args: Any, **kwargs: Any) -> "HarnessContext":
+    def __init__(self, session_id: str | None = None, project_dir: Path | None = None) -> None:
         """
-        Create or return the singleton instance.
+        Initialize the context.
         """
-        if not cls._instance:
-            cls._instance = super().__new__(cls)
-            prefix = "test-" if "pytest" in sys.modules else ""
-            cls._instance.session_id = f"{prefix}{uuid4()}"
-            cls._instance.project_dir = Path.cwd()
-        return cls._instance
+        prefix = "test-" if "pytest" in sys.modules else ""
+        self.session_id = session_id or f"{prefix}{uuid4()}"
+        self.project_dir = project_dir or Path.cwd()
 
     @property
     def backup_dir(self) -> Path:

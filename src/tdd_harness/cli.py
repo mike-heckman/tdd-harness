@@ -11,7 +11,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .config import TddHarnessConfig, load_tdd_harness_config, resolve_config_directory
+from .config import HarnessContext, TddHarnessConfig, load_tdd_harness_config, resolve_config_directory
+from .context import ContextBuilder
 from .controller import TDDLoopController
 from .exceptions import HarnessAbort, MCPFatalError
 from .llm import LLMClient
@@ -164,9 +165,12 @@ async def async_main(config_dir: Path, phase: str | None = None):
         def get_config(self) -> TddHarnessConfig:
             return self.cfg
 
-    llm_client = LLMClient(_ConfigLoaderWrapper(config), Prompt("system_message"))
+    harness_ctx = HarnessContext()
+    context_builder = ContextBuilder()
 
-    controller = TDDLoopController(config, registry, llm_client)
+    llm_client = LLMClient(_ConfigLoaderWrapper(config), Prompt("system_message"), context_builder)
+
+    controller = TDDLoopController(config, registry, llm_client, harness_ctx, context_builder)
 
     print("Running Amber pre-flight validation...")
     if not controller.pre_flight_validation():
