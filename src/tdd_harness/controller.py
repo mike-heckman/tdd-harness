@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import shutil
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -488,22 +489,14 @@ class TDDLoopController:
             raise RuntimeError(res.error)
         return res.content
 
-    async def run_blue_phase(self, task_file: Path) -> None:
+    def _assemble_base_context(self, task_file: Path) -> None:
         """
-        Orchestrates the Blue (Structural Blueprint) phase end-to-end.
+        Assembles the standard task context shared across phases.
         """
-        self.current_phase = Phase.BLUE
-        self._phase_successful = False
-
-        # 1. Capture initial test count
-        run_test(self.config)
-        self._initial_blue_test_count = self._get_test_count()
-
-        # 2. Assemble Context
         task_content = task_file.read_text(encoding="utf-8")
         if "---" in task_content:
             parts = task_content.split("---", 2)
-            frontmatter = yaml.safe_load(parts[1])
+            frontmatter = __import__("yaml").safe_load(parts[1])
             context_text = parts[2].strip()
         else:
             frontmatter = {}
@@ -514,12 +507,11 @@ class TDDLoopController:
         cb = self.context_builder
         cb.clear()
 
-        # Add phase instructions
         try:
-            phase_prompt = Prompt("blue_phase_prompt").get_system_message()
+            phase_prompt = Prompt(f"{self.current_phase.name.lower()}_phase_prompt").get_system_message()
             cb.add_context(phase_prompt)
         except FileNotFoundError:
-            logger.warning("No prompt found for blue phase.")
+            logger.warning(f"No prompt found for {self.current_phase.name.lower()} phase.")
 
         cb.add_context(
             Context(text=f"<task_context>\n{context_text}\n</task_context>", context_type=ContextType.TASK_CONTEXT)
@@ -539,189 +531,98 @@ class TDDLoopController:
                     )
                 )
 
+    async def _run_phase_loop(
+        self, phase: Phase, context_assembler_fn: "Callable[[], None] | Callable[[], Awaitable[None]] | None" = None
+    ) -> None:
+        """
+        Core template loop for orchestrating a TDD phase.
+        """
+        self.current_phase = phase
+        self._phase_successful = False
+
+        if context_assembler_fn:
+            if __import__("inspect").iscoroutinefunction(context_assembler_fn):
+                await context_assembler_fn()  # pyright: ignore[reportGeneralTypeIssues]
+            else:
+                context_assembler_fn()
+
         tools = get_tools_for_phase(self.current_phase.value)
-
         self.tracker.reset()
+        self.past_failure_summaries.clear()
 
-        # 3. Tool-call loop
-        self._blue_loop_active = True
-        while self._blue_loop_active:
+        loop_active = True
+        last_failure_count = 0
+        while loop_active:
+            if len(self.past_failure_summaries) > last_failure_count:
+                for pm in self.past_failure_summaries[last_failure_count:]:
+                    self.context_builder.add_context(
+                        Context(text=f"Post-Mortem Guidance:\n{pm}", context_type=ContextType.POST_MORTEM_SUMMARY)
+                    )
+                last_failure_count = len(self.past_failure_summaries)
+
             await self.llm_client.chat(contexts=[], tools=tools, registry=self.registry)
 
             if self._phase_successful:
-                self._blue_loop_active = False
+                loop_active = False
                 break
 
             if self.tracker.should_abort():
                 self.abort("Anti-thrashing limits exceeded.")
+
+    async def run_blue_phase(self, task_file: Path) -> None:
+        """
+        Orchestrates the Blue (Structural Blueprint) phase end-to-end.
+        """
+
+        def assembler():
+            # 1. Capture initial test count
+            run_test(self.config)
+            self._initial_blue_test_count = self._get_test_count()
+            self._assemble_base_context(task_file)
+
+        await self._run_phase_loop(Phase.BLUE, assembler)
 
     async def run_red_phase(self, task_file: Path) -> None:
         """
         Orchestrates the Red (Test Generation) phase end-to-end.
         """
-        self.current_phase = Phase.RED
-        self._phase_successful = False
 
-        # Assemble Context
-        task_content = task_file.read_text(encoding="utf-8")
-        if "---" in task_content:
-            parts = task_content.split("---", 2)
-            frontmatter = yaml.safe_load(parts[1])
-            context_text = parts[2].strip()
-        else:
-            frontmatter = {}
-            context_text = task_content
+        def assembler():
+            self._assemble_base_context(task_file)
 
-        success_criteria = frontmatter.get("success_criteria", [])
-
-        cb = self.context_builder
-        cb.clear()
-
-        # Add phase instructions
-        try:
-            phase_prompt = Prompt("red_phase_prompt").get_system_message()
-            cb.add_context(phase_prompt)
-        except FileNotFoundError:
-            logger.warning("No prompt found for red phase.")
-
-        cb.add_context(
-            Context(text=f"<task_context>\n{context_text}\n</task_context>", context_type=ContextType.TASK_CONTEXT)
-        )
-        for criteria in success_criteria:
-            cb.add_context(Context(text=f"<criteria>\n{criteria}\n</criteria>", context_type=ContextType.TASK_CRITERIA))
-
-        target_files = frontmatter.get("target_files", [])
-        for file in target_files:
-            file_path = Path(file)
-            if file_path.exists():
-                source = self.read_file_safe(str(file_path))
-                cb.add_context(
-                    Context(
-                        text=f'<file name="{file}">\n```python\n{source}\n```\n</file>',
-                        context_type=ContextType.FILE_SOURCE,
-                    )
-                )
-
-        tools = get_tools_for_phase(self.current_phase.value)
-
-        self.tracker.reset()
-        self.past_failure_summaries.clear()
-
-        # Tool-call loop
-        self._red_loop_active = True
-        last_failure_count = 0
-        while self._red_loop_active:
-            # Inject new post-mortem summaries if any
-            if len(self.past_failure_summaries) > last_failure_count:
-                for pm in self.past_failure_summaries[last_failure_count:]:
-                    cb.add_context(
-                        Context(text=f"Post-Mortem Guidance:\n{pm}", context_type=ContextType.POST_MORTEM_SUMMARY)
-                    )
-                last_failure_count = len(self.past_failure_summaries)
-
-            await self.llm_client.chat(contexts=[], tools=tools, registry=self.registry)
-
-            if self._phase_successful:
-                self._red_loop_active = False
-                break
-
-            if self.tracker.should_abort():
-                self.abort("Anti-thrashing limits exceeded.")
+        await self._run_phase_loop(Phase.RED, assembler)
 
     async def run_green_phase(self, task_file: Path) -> None:
         """
         Orchestrates the Green (Develop Implementation) phase end-to-end.
         """
-        self.current_phase = Phase.GREEN
-        self._phase_successful = False
 
-        # Assemble Context
-        task_content = task_file.read_text(encoding="utf-8")
-        if "---" in task_content:
-            parts = task_content.split("---", 2)
-            frontmatter = yaml.safe_load(parts[1])
-            context_text = parts[2].strip()
-        else:
-            frontmatter = {}
-            context_text = task_content
+        def assembler():
+            self._assemble_base_context(task_file)
 
-        success_criteria = frontmatter.get("success_criteria", [])
-
-        cb = self.context_builder
-        cb.clear()
-
-        # Add phase instructions
-        try:
-            phase_prompt = Prompt("green_phase_prompt").get_system_message()
-            cb.add_context(phase_prompt)
-        except FileNotFoundError:
-            logger.warning("No prompt found for green phase.")
-
-        cb.add_context(
-            Context(text=f"<task_context>\n{context_text}\n</task_context>", context_type=ContextType.TASK_CONTEXT)
-        )
-        for criteria in success_criteria:
-            cb.add_context(Context(text=f"<criteria>\n{criteria}\n</criteria>", context_type=ContextType.TASK_CRITERIA))
-
-        target_files = frontmatter.get("target_files", [])
-        for file in target_files:
-            file_path = Path(file)
-            if file_path.exists():
-                source = self.read_file_safe(str(file_path))
-                cb.add_context(
-                    Context(
-                        text=f'<file name="{file}">\n```python\n{source}\n```\n</file>',
-                        context_type=ContextType.FILE_SOURCE,
-                    )
-                )
-
-        # Load Test Concepts
-        reasoning_dir = self.harness_ctx.reasoning_dir
-        if reasoning_dir.exists():
-            reasoning_files = list(reasoning_dir.glob("*.yaml"))
-        else:
-            reasoning_files = []
-        for r_file in reasoning_files:
-            try:
-                with open(r_file, encoding="utf-8") as f:
-                    data = yaml.safe_load(f) or {}
-                    for test_name, sessions in data.items():
-                        for _sess_id, concept in sessions.items():
-                            if _sess_id == self.session_id:
-                                cb.add_context(
-                                    Context(
-                                        text=f"Test Concept ({test_name}): {concept}",
-                                        context_type=ContextType.TEST_CONCEPTS,
+            # Load Test Concepts
+            reasoning_dir = self.harness_ctx.reasoning_dir
+            if reasoning_dir.exists():
+                reasoning_files = list(reasoning_dir.glob("*.yaml"))
+            else:
+                reasoning_files = []
+            for r_file in reasoning_files:
+                try:
+                    with open(r_file, encoding="utf-8") as f:
+                        data = __import__("yaml").safe_load(f) or {}
+                        for test_name, sessions in data.items():
+                            for _sess_id, concept in sessions.items():
+                                if _sess_id == self.session_id:
+                                    self.context_builder.add_context(
+                                        Context(
+                                            text=f"Test Concept ({test_name}): {concept}",
+                                            context_type=ContextType.TEST_CONCEPTS,
+                                        )
                                     )
-                                )
-            except Exception as e:
-                logger.warning(f"Failed to load reasoning file {r_file}: {e}")
+                except Exception as e:
+                    logger.warning(f"Failed to load reasoning file {r_file}: {e}")
 
-        tools = get_tools_for_phase(self.current_phase.value)
-
-        self.tracker.reset()
-        self.past_failure_summaries.clear()
-
-        # Tool-call loop
-        self._green_loop_active = True
-        last_failure_count = 0
-        while self._green_loop_active:
-            # Inject new post-mortem summaries if any
-            if len(self.past_failure_summaries) > last_failure_count:
-                for pm in self.past_failure_summaries[last_failure_count:]:
-                    cb.add_context(
-                        Context(text=f"Post-Mortem Guidance:\n{pm}", context_type=ContextType.POST_MORTEM_SUMMARY)
-                    )
-                last_failure_count = len(self.past_failure_summaries)
-
-            await self.llm_client.chat(contexts=[], tools=tools, registry=self.registry)
-
-            if self._phase_successful:
-                self._green_loop_active = False
-                break
-
-            if self.tracker.should_abort():
-                self.abort("Anti-thrashing limits exceeded.")
+        await self._run_phase_loop(Phase.GREEN, assembler)
 
     async def run_magenta_loop(self) -> None:
         """

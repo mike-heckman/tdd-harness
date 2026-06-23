@@ -593,3 +593,53 @@ async def test_success_fallback_task_file(mock_check_green, mock_lint, controlle
         # Verify the fallback content was read
         args, _ = controller.review_agent.review.call_args
         assert args[0] == "Fallback task content"
+
+
+@pytest.mark.asyncio
+async def test_assemble_base_context(controller, tmp_path):
+    task_file = tmp_path / "task.md"
+    task_file.write_text(
+        "---\nsuccess_criteria:\n  - 'Do a thing'\ntarget_files:\n  - 'dummy.py'\n---\n## Context\nTest Context"
+    )
+    from src.tdd_harness.context import Context, ContextType
+
+    with patch(
+        "src.tdd_harness.controller.Prompt.get_system_message",
+        return_value=Context(text="SystemPrompt", context_type=ContextType.SYSTEM),
+    ):
+        with patch.object(controller, "read_file_safe", return_value="print('dummy')"):
+            with patch("src.tdd_harness.controller.Path.exists", return_value=True):
+                controller.current_phase = Phase.BLUE
+                controller._assemble_base_context(task_file)
+
+    contexts = controller.context_builder.get_context()
+    texts = [ctx.text for ctx in contexts]
+
+    assert any("SystemPrompt" in t for t in texts)
+    assert any("Test Context" in t for t in texts)
+    assert any("Do a thing" in t for t in texts)
+    assert any("print('dummy')" in t for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_run_phase_loop(controller):
+    assembler_called = False
+
+    def assembler():
+        nonlocal assembler_called
+        assembler_called = True
+
+    chat_call_count = 0
+
+    async def mock_chat(*args, **kwargs):
+        nonlocal chat_call_count
+        chat_call_count += 1
+        controller._phase_successful = True
+
+    with patch.object(controller.llm_client, "chat", new=mock_chat):
+        await controller._run_phase_loop(Phase.BLUE, context_assembler_fn=assembler)
+
+    assert assembler_called
+    assert controller.current_phase == Phase.BLUE
+    assert chat_call_count == 1
+    assert controller._phase_successful is True
