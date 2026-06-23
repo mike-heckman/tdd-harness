@@ -7,11 +7,11 @@ from unittest.mock import patch
 import yaml
 
 from src.tdd_harness.config import (
+    ConfigResolver,
     PromptConfig,
     TddHarnessConfig,
     load_prompt_config,
     load_tdd_harness_config,
-    resolve_config_directory,
 )
 
 
@@ -25,7 +25,8 @@ def test_resolve_config_directory_fallbacks():
 
         with patch("src.tdd_harness.config.Path.cwd") as mock_cwd:
             mock_cwd.return_value = tmp_path
-            resolved = resolve_config_directory()
+            resolver = ConfigResolver()
+            resolved = resolver.resolve()
             assert resolved == config_dir
 
 
@@ -87,3 +88,25 @@ def test_load_prompt_config():
         prompt_config = load_prompt_config("system_message", project_dir=tmp_path)
         assert isinstance(prompt_config, PromptConfig)
         assert prompt_config.prompt == "You are a helpful AI assistant."
+
+
+def test_config_resolver_isolated_state():
+    """Test that two ConfigResolver instances do not share cache state."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        config_dir = tmp_path / ".tdd-harness"
+        config_dir.mkdir()
+
+        with patch("src.tdd_harness.config.Path.cwd") as mock_cwd:
+            mock_cwd.return_value = tmp_path
+
+            resolver_a = ConfigResolver()
+            resolver_b = ConfigResolver()
+
+            # Resolve with a to populate its cache
+            resolved_a = resolver_a.resolve()
+            assert resolved_a == config_dir
+            assert len(resolver_a._cache) == 1
+
+            # b should have empty cache
+            assert len(resolver_b._cache) == 0

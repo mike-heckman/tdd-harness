@@ -1,7 +1,7 @@
 # Test Coverage Report
 
-- **Date:** 2026-06-22 22:01:33
-- **Branch:** `task/0042`
+- **Date:** 2026-06-22 22:08:56
+- **Branch:** `task/0043`
 - **Status:** PASSED
 
 ### LCOV Aggregated
@@ -15,7 +15,7 @@
 | src/tdd_harness/adapters/pytest_adapter.py | 42 | 36 | 85.71% | 36-37, 51, 66-68 |
 | src/tdd_harness/adapters/ruff_adapter.py | 29 | 26 | 89.66% | 32, 53-54 |
 | src/tdd_harness/cli.py                   | 108 | 104 | 96.30% | 117-118, 137, 219 |
-| src/tdd_harness/config.py                | 84 | 71 | 84.52% | 36, 95, 117, 133, 141-148, 166 |
+| src/tdd_harness/config.py                | 85 | 72 | 84.71% | 36, 98, 118, 133, 141-148, 167 |
 | src/tdd_harness/context.py               | 68 | 65 | 95.59% | 56, 135-136 |
 | src/tdd_harness/controller.py            | 449 | 386 | 85.97% | 118, 140-143, 170-171, 200, 230, 262, 271-274, 277-281, 283-284, 291, 316-319, 321-322, 346, 352, 361-362, 389, 394, 396, 399, 435, 440-441, 473-478, 489, 502-503, 545, 570, 608, 610-616, 622-623, 639, 659, 669 |
 | src/tdd_harness/coverage_parser.py       | 53 | 50 | 94.34% | 50, 53-54 |
@@ -35,9 +35,9 @@
 | src/tdd_harness/tool_schemas.py          | 4 | 4 | 100.00% |  |
 | src/tdd_harness/tracker.py               | 42 | 40 | 95.24% | 87, 107 |
 | src/tdd_harness/utils.py                 | 36 | 35 | 97.22% | 30 |
-| tests/conftest.py                        | 12 | 12 | 100.00% |  |
+| tests/conftest.py                        | 6 | 6 | 100.00% |  |
 | tests/test_cli.py                        | 213 | 211 | 99.06% | 89-90 |
-| tests/test_config.py                     | 40 | 40 | 100.00% |  |
+| tests/test_config.py                     | 54 | 54 | 100.00% |  |
 | tests/test_context.py                    | 23 | 23 | 100.00% |  |
 | tests/test_controller.py                 | 422 | 420 | 99.53% | 19, 586 |
 | tests/test_coverage_parser.py            | 58 | 58 | 100.00% |  |
@@ -55,5 +55,5 @@
 | tests/test_tool_schemas.py               | 10 | 10 | 100.00% |  |
 | tests/test_tracker.py                    | 58 | 58 | 100.00% |  |
 | tests/test_utils.py                      | 54 | 54 | 100.00% |  |
-| **LCOV Aggregated Language Counts** | 3504 | 3360 | 95.89% | |
+| **LCOV Aggregated Language Counts** | 3513 | 3369 | 95.90% | |
 
